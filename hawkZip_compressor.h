@@ -4,7 +4,7 @@
 #include <emmintrin.h>
 #include <omp.h>
 
-#define NUM_THREADS 4
+#define NUM_THREADS 1024
 
 void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQuant, unsigned int* signFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
 {

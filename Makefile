@@ -1,5 +1,12 @@
 test: hawkZip
 		./hawkZip -i ./1800x3600/TAUX_1_1800_3600.f32 -e 1e-4
+
+multiTest: hawkZipTest
+		./hawkZipTest -i ./1800x3600/TAUX_1_1800_3600.f32 -e 1e-4
+
+hawkZipTest: hawkZip_test.c
+		gcc hawkZip_test.c -O0 -o hawkZipTest -lm -fopenmp
 		
 hawkZip: hawkZip_main.c
 		gcc hawkZip_main.c -O0 -o hawkZip -lm -fopenmp
+
