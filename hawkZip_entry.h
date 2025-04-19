@@ -3,12 +3,14 @@
 #include <string.h>
 #include <omp.h>
 #include "hawkZip_compressor.h"
+
 int testing = 1; //0 for release mode, 1 for testing mode
+#define BLOCK_SIZE 32
 
 void hawkZip_compress(float* oriData, unsigned char* cmpData, size_t nbEle, size_t* cmpSize, float errorBound)
 {
     // Variables used in compression kernel
-    int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + 31) / 32 * NUM_THREADS;
+    int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + (BLOCK_SIZE-1)) / BLOCK_SIZE * NUM_THREADS;
     int* absQuant = (int*)malloc(sizeof(int)*nbEle);
     unsigned int* signFlag = (unsigned int*)malloc(sizeof(unsigned int)*blockNum);
     int* fixedRate = (int*)malloc(sizeof(int)*blockNum);
@@ -35,7 +37,7 @@ void hawkZip_compress(float* oriData, unsigned char* cmpData, size_t nbEle, size
 void hawkZip_decompress(float* decData, unsigned char* cmpData, size_t nbEle, float errorBound)
 {
     // Varaibles used in decompression kernel
-    int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + 31) / 32 * NUM_THREADS;
+    int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + (BLOCK_SIZE-1)) / BLOCK_SIZE * NUM_THREADS;
     int* absQuant = (int*)malloc(sizeof(int)*nbEle);
     memset(absQuant, 0, sizeof(int)*nbEle);
     int* fixedRate = (int*)malloc(sizeof(int)*blockNum);
@@ -67,7 +69,7 @@ void hawkZip_decompress(float* decData, unsigned char* cmpData, size_t nbEle, fl
 float* hawkZip_compress_Test(float* oriData, unsigned char* cmpData, size_t nbEle, size_t* cmpSize, float errorBound)
 {
     // Variables used in compression kernel
-    int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + 31) / 32 * NUM_THREADS;
+    int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + (BLOCK_SIZE-1)) / BLOCK_SIZE * NUM_THREADS;
     int* absQuant = (int*)malloc(sizeof(int)*nbEle);
     unsigned int* signFlag = (unsigned int*)malloc(sizeof(unsigned int)*blockNum);
     int* fixedRate = (int*)malloc(sizeof(int)*blockNum);
@@ -104,7 +106,7 @@ float* hawkZip_compress_Test(float* oriData, unsigned char* cmpData, size_t nbEl
 float hawkZip_decompress_Test(float* decData, unsigned char* cmpData, size_t nbEle, float errorBound)
 {
     // Varaibles used in decompression kernel
-    int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + 31) / 32 * NUM_THREADS;
+    int blockNum = ((nbEle + NUM_THREADS - 1) / NUM_THREADS  + (BLOCK_SIZE-1)) / BLOCK_SIZE * NUM_THREADS;
     int* absQuant = (int*)malloc(sizeof(int)*nbEle);
     memset(absQuant, 0, sizeof(int)*nbEle);
     int* fixedRate = (int*)malloc(sizeof(int)*blockNum);

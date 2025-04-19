@@ -4,7 +4,8 @@
 #include <emmintrin.h>
 #include <omp.h>
 
-#define NUM_THREADS 1024
+#define NUM_THREADS 32
+//#define BLOCK_SIZE 64
 
 void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQuant, unsigned int* signFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
 {
@@ -12,6 +13,9 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
     omp_set_num_threads(NUM_THREADS);
     
+    const float recip_precision = 0.5f/errorBound;  //--moved outside parallel region since only need to be computed once
+    int block_num = (chunk_size+31)/32;             //--moved outside parallel region since only need to be computed once
+
     // hawkZip parallel compression begin.
     #pragma omp parallel
     {
@@ -20,10 +24,10 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
         int start = thread_id * chunk_size;
         int end = start + chunk_size;
         if(end > nbEle) end = nbEle;
-        int block_num = (chunk_size+31)/32;
+        
         int start_block = thread_id * block_num;
         int block_start, block_end;
-        const float recip_precision = 0.5f/errorBound;
+        
         int sign_ofs;
         unsigned int thread_ofs = 0; 
 
@@ -53,6 +57,8 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                 // Get absolute quantization code.
                 max_quant = max_quant > abs(curr_quant) ? max_quant : abs(curr_quant);
                 absQuant[j] = abs(curr_quant);
+                
+                //printf(absQuant[j]);
             }
 
             // Record fixed-length encoding rate for each block.

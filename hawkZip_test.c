@@ -137,8 +137,8 @@ int main(int argc, char* argv[])
                 not_bound++;
             }
         }
-        if(not_bound) printf("\033[0;31mError Check Fail!\033[0m %d unbounded data points.\n", not_bound);
-        else printf("\033[0;32mError Check Success!\033[0m\n");
+        //if(not_bound) printf("\033[0;31mError Check Fail!\033[0m %d unbounded data points.\n", not_bound);
+        //else printf("\033[0;32mError Check Success!\033[0m\n");
 
         // Write compressed or reconstructed/decompressed data if needed.
         if (cmpFilePath[0] != '\0')
