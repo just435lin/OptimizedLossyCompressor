@@ -4,9 +4,9 @@ test: hawkZip
 multiTest: hawkZipTest
 		./hawkZipTest -i ./1800x3600/TAUX_1_1800_3600.f32 -e 1e-4
 
-hawkZipTest: hawkZip_test.c
+hawkZipTest: hawkZip_test.c hawkZip_compressor.h hawkzip_entry.h 
 		gcc hawkZip_test.c -O0 -o hawkZipTest -lm -fopenmp
 		
-hawkZip: hawkZip_main.c
+hawkZip: hawkZip_main.c hawkZip_compressor.h hawkzip_entry.h 
 		gcc hawkZip_main.c -O0 -o hawkZip -lm -fopenmp
 
