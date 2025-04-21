@@ -59,8 +59,8 @@ void hawkZip_compress_kernel(
             float oriStart = oriData[block_start];
             data_recip = oriStart * recip_precision;
             curr_quant = (int)(data_recip + (data_recip < 0.0f ? -0.5f : 0.5f));
-            absQuant[block_start] = curr_quant;            
-            
+            absQuant[block_start] = abs(curr_quant);            
+            int firstQuant = absQuant[block_start];
             // Over every value in the block.
             // Prequantization, get absolute value for each data.
             int loc = block_start + 1;
@@ -68,14 +68,28 @@ void hawkZip_compress_kernel(
             do 
             {
                 // Prequantization.
-                data_recip = (oriData[loc] - oriData[loc-1]) * recip_precision; // divide the data by errorBound ( and by 2?)
-                curr_quant = (int)(data_recip + (data_recip < 0.0f ? -0.5f : 0.5f)) ; // Round to nearest integer by truncating
+                data_recip = oriData[loc] * recip_precision; // divide the data by errorBound ( and by 2?)
+                curr_quant = (int)(data_recip + (data_recip < 0.0f ? -0.5f : 0.5f)); // Round to nearest integer by truncating
                 
                 // Get sign data.
                 sign_flag |= (curr_quant < 0) << (31 - j);  // marking the sign of the quantization as a bitflag: 1 => negative, 0 => positive
                 
-                curr_quant = abs(curr_quant);
+                int temp = abs(curr_quant);
+
+                curr_quant = (firstQuant - (abs(curr_quant)));
+
+                int temp2 = curr_quant;
+                
+                if (curr_quant!=0) {
+                    curr_quant = (curr_quant<0) ? curr_quant*(-2)-1 : (curr_quant*2);        //zig zag maps -1=1 1=2 -2=2 2=4 etc
+                }
+                
+                if (loc==25636) {
+                    printf("Compressed Quant: %d-- %d - %d = %d\n",curr_quant,firstQuant,temp,temp2);
+                }
+
                 absQuant[loc] = curr_quant;                                         // write down the data
+                //printf("Quant: %d\n",curr_quant);
                 
                 // Get absolute quantization code.
                 max_quant |= curr_quant; // max_quant > curr_quant ? max_quant : curr_quant; // increase max_quant to keep quantization consistent within the block
@@ -235,11 +249,13 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             
 			
 			//printf("START_WRITE %d\n", thread_id);
-			
+			int firstQuant = 0;
             // Retrieve first value from block
 			{
 				int write;
+                
 				memcpy(&write, &(cmpData[cmp_byte_ofs]), 4);
+                firstQuant = write;
 				decData[block_start] = (float)write * errorBound * 2;
 				cmp_byte_ofs += 4;	
 			}
@@ -288,13 +304,33 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
 
                 // De-quantize and store data back to decompression data.
                 int currQuant;
+                //printf("Startquant: %d\n",absQuant[block_start]);
                 for(int i=0; i<32; i++)
                 {
+                    int unZigZag = absQuant[i + 1 + block_start];
+
+                    int temp = unZigZag;
+
+                    if (unZigZag!=0) {
+                        unZigZag = unZigZag%2 ? (unZigZag+1)/2 : (unZigZag/2);        //maps to original value, 2=>1  3=>-2
+                    }
+                    
+                    int temp2 = unZigZag;
+
+                    //printf("First: %d Curr: %d\n",firstQuant,unZigZag);
+
                     if(sign_flag & (1 << (31 - i)))
-                        currQuant = absQuant[i + 1 + block_start] * -1;
+                        currQuant = (firstQuant + unZigZag) * -1;
                     else
-                        currQuant = absQuant[i + 1 + block_start];
-                    decData[i + 1 + block_start] = (currQuant * errorBound * 2) + decData[i + block_start];
+                        currQuant = firstQuant + unZigZag;
+                    
+                    //printf("Decompress: %d - %d = %d\n", absQuant[i + 1 + block_start],absQuant[block_start],currQuant);
+
+                    if ((i+1+block_start)==25636) {
+                        printf("Decompressed Quant: %d-- %d - %d = %d\n",temp,firstQuant,currQuant,temp2);
+                    }
+
+                    decData[i + 1 + block_start] = (currQuant * errorBound * 2);
                 }
             }
             else 
