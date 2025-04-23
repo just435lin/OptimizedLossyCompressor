@@ -6,20 +6,7 @@
 #include <omp.h>
 #include <time.h>
 
-#define NUM_THREADS 4
-
-
-
-// Helper function to print the bits of an array of chars
-void printBits(const unsigned char* array, size_t start, size_t end) {
-    for (size_t i = start; i < end; i++) {
-        for (int bit = 7; bit >= 0; bit--) {
-            printf("%d", (array[i] >> bit) & 1); 
-        }
-        printf("; ");
-    }
-    printf("END\n");
-}
+#define NUM_THREADS 1
 
 int max(int a, int b) {
     return (a > b) ? a : b;
@@ -88,27 +75,21 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                                                 (1 << (31 - ((j + 1) % 32))),
                                                 (1 << (31 - (j % 32)))
                 ));
-                int bool_vals_temp[4];
-                _mm_store_si128((__m128i*)bool_vals_temp, bools_temp);
-                sign_flag |= (bool_vals_temp[0] | bool_vals_temp[1]| bool_vals_temp[2]| bool_vals_temp[3]);  
+
+                
                 
                 sign_mask = _mm_srai_epi32(curr_quant_vals, 31); // Extract sign bits
                 abs_vals = _mm_sub_epi32(_mm_xor_si128(curr_quant_vals, sign_mask), sign_mask);
                 _mm_store_si128((__m128i*)&absQuant[j], abs_vals);
+
+                //only need leading zeros, not the true max. just or together to get all the leading zeros
+                max_quant |= absQuant[j] | absQuant[j+1] | absQuant[j+3] | absQuant[j+2];
                 
-                max_quant = max(
-                                max(
-                                    max(absQuant[j], absQuant[j+1]), 
-                                    max(absQuant[j+3], absQuant[j+2])
-                                ),
-                                max_quant
-                            ); 
+                sign_flag |= (_mm_extract_epi32(bools_temp, 0) | _mm_extract_epi32(bools_temp, 1)
+                          | _mm_extract_epi32(bools_temp, 2)|_mm_extract_epi32(bools_temp, 3));  
+
                 parallel_iters++;
             }
-            int curr_quant;
-            //non-parallel implementation for the rest of the data (<4)
-
-            
 
             // Record fixed-length encoding rate for each block.
             //TODO: Not sure how to make this faster
@@ -157,37 +138,72 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
 
                 // Retrieve quant data for one block.
                 unsigned char tmp_char[4];
+
+
                 __m128i mask = _mm_set1_epi32(1);
-                
 
                 //TODO potentially invert these two loops so that the acess pattern (of absQuat) is more predictable
                 for(int j=0; j<temp_fixed_rate; j++){
                     // Initialization.
-                    tmp_char[0] = 0; tmp_char[1] = 0; tmp_char[2] = 0; tmp_char[3] = 0;
+                    //tmp_char[0] = 0; tmp_char[1] = 0; tmp_char[2] = 0; tmp_char[3] = 0;
                     
                     
-                    for(int k = 0; k < 4; k++){
-                        
-                        __m128i block= _mm_loadu_si128((__m128i *)&absQuant[block_start + 8*k]);
-                        __m128i block1= _mm_loadu_si128((__m128i *)&absQuant[block_start + 4 + 8*k]);
-                        __m128i result = _mm_srli_epi32( _mm_and_si128(block, mask), j);
-                        
-                        __m128i result1 = _mm_srli_epi32( _mm_and_si128(block1, mask), j);
+                    
+                    __m128i block= _mm_loadu_si128((__m128i *)&absQuant[block_start]);
+                    __m128i block1= _mm_loadu_si128((__m128i *)&absQuant[block_start + 4]);  
+                    __m128i block2= _mm_loadu_si128((__m128i *)&absQuant[block_start + 8]);
+                    __m128i block3= _mm_loadu_si128((__m128i *)&absQuant[block_start + 12]);  
+                    __m128i block4= _mm_loadu_si128((__m128i *)&absQuant[block_start + 16]);
+                    __m128i block5= _mm_loadu_si128((__m128i *)&absQuant[block_start + 20]);  
+                    __m128i block6= _mm_loadu_si128((__m128i *)&absQuant[block_start + 24]);
+                    __m128i block7= _mm_loadu_si128((__m128i *)&absQuant[block_start + 28]);  
 
-                        tmp_char[k] |= _mm_extract_epi32 (result, 0) << 7
-                                    | _mm_extract_epi32 (result, 1) << 6
-                                    | _mm_extract_epi32 (result, 2) << 5
-                                    | _mm_extract_epi32 (result, 3) << 4
-                                    | _mm_extract_epi32 (result1, 0) << 3
-                                    | _mm_extract_epi32 (result1, 1) << 2
-                                    | _mm_extract_epi32 (result1, 2) << 1
-                                    | _mm_extract_epi32 (result1, 3) << 0;
-                                
-                    }
-                    cmpData[cmp_byte_ofs++] = tmp_char[0];
-                    cmpData[cmp_byte_ofs++] = tmp_char[1];
-                    cmpData[cmp_byte_ofs++] = tmp_char[2];
-                    cmpData[cmp_byte_ofs++] = tmp_char[3];
+
+                    __m128i result = _mm_srli_epi32( _mm_and_si128(block, mask), j);
+                    __m128i result1 = _mm_srli_epi32( _mm_and_si128(block1, mask), j);
+                    __m128i result2 = _mm_srli_epi32( _mm_and_si128(block2, mask), j);
+                    __m128i result3 = _mm_srli_epi32( _mm_and_si128(block3, mask), j);
+                    __m128i result4 = _mm_srli_epi32( _mm_and_si128(block4, mask), j);
+                    __m128i result5 = _mm_srli_epi32( _mm_and_si128(block5, mask), j);
+                    __m128i result6 = _mm_srli_epi32( _mm_and_si128(block6, mask), j);
+                    __m128i result7 = _mm_srli_epi32( _mm_and_si128(block7, mask), j);
+
+                    cmpData[cmp_byte_ofs++] |= _mm_extract_epi32 (result, 0) << 7
+                                | _mm_extract_epi32 (result, 1) << 6
+                                | _mm_extract_epi32 (result, 2) << 5
+                                | _mm_extract_epi32 (result, 3) << 4
+                                | _mm_extract_epi32 (result1, 0) << 3
+                                | _mm_extract_epi32 (result1, 1) << 2
+                                | _mm_extract_epi32 (result1, 2) << 1
+                                | _mm_extract_epi32 (result1, 3) << 0;
+                    cmpData[cmp_byte_ofs++] |= _mm_extract_epi32 (result2, 0) << 7
+                                | _mm_extract_epi32 (result2, 1) << 6
+                                | _mm_extract_epi32 (result2, 2) << 5
+                                | _mm_extract_epi32 (result2, 3) << 4
+                                | _mm_extract_epi32 (result3, 0) << 3
+                                | _mm_extract_epi32 (result3, 1) << 2
+                                | _mm_extract_epi32 (result3, 2) << 1
+                                | _mm_extract_epi32 (result3, 3) << 0;
+                    cmpData[cmp_byte_ofs++] |= _mm_extract_epi32 (result4, 0) << 7
+                                | _mm_extract_epi32 (result4, 1) << 6
+                                | _mm_extract_epi32 (result4, 2) << 5
+                                | _mm_extract_epi32 (result4, 3) << 4
+                                | _mm_extract_epi32 (result5, 0) << 3
+                                | _mm_extract_epi32 (result5, 1) << 2
+                                | _mm_extract_epi32 (result5, 2) << 1
+                                | _mm_extract_epi32 (result5, 3) << 0;
+                    cmpData[cmp_byte_ofs++] |= _mm_extract_epi32 (result6, 0) << 7
+                                | _mm_extract_epi32 (result6, 1) << 6
+                                | _mm_extract_epi32 (result6, 2) << 5
+                                | _mm_extract_epi32 (result6, 3) << 4
+                                | _mm_extract_epi32 (result7, 0) << 3
+                                | _mm_extract_epi32 (result7, 1) << 2
+                                | _mm_extract_epi32 (result7, 2) << 1
+                                | _mm_extract_epi32 (result7, 3) << 0;
+                    
+                    
+                    
+                    
                     mask = _mm_slli_epi32(mask, 1);
                 }
             }
