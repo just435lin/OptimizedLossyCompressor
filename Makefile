@@ -11,7 +11,7 @@ hawkZipTest: hawkZip_test.c hawkZip_compressor.h
 		gcc hawkZip_test.c -O0 -o hawkZipTest -lm -fopenmp
 		
 hawkZip: hawkZip_main.c hawkZip_compressor.h
-		gcc hawkZip_main.c -O0 -o hawkZip -lm -fopenmp -mavx
+		gcc hawkZip_main.c -O0 -o hawkZip -lm -fopenmp -mavx -mavx2
 
 
 clean: 
