@@ -1,20 +1,41 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <emmintrin.h>
+#include <tmmintrin.h>
+#include <immintrin.h> 
 #include <omp.h>
+#include <time.h>
 
-#define NUM_THREADS 1024
+#define NUM_THREADS 1
+
+
+
+// Helper function to print the bits of an array of chars
+void printBits(const unsigned char* array, size_t start, size_t end) {
+    for (size_t i = start; i < end; i++) {
+        for (int bit = 7; bit >= 0; bit--) {
+            printf("%d", (array[i] >> bit) & 1); 
+        }
+        printf("; ");
+    }
+    printf("END\n");
+}
+
 
 void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQuant, unsigned int* signFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
 {
+   
+    double t_start,t_quantize, t_prefix, t_encoding, t_total_start, t_end;
+    
+    t_total_start = omp_get_wtime();
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
     omp_set_num_threads(NUM_THREADS);
-    
     // hawkZip parallel compression begin.
     #pragma omp parallel
     {
+        t_start = omp_get_wtime();
+        t_start = omp_get_wtime();
         // Divide data chunk for each thread
         int thread_id = omp_get_thread_num();
         int start = thread_id * chunk_size;
@@ -24,57 +45,93 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
         int start_block = thread_id * block_num;
         int block_start, block_end;
         const float recip_precision = 0.5f/errorBound;
-        int sign_ofs;
+        int sign_ofs, sign_ofs1, sign_ofs2, sign_ofs3;
         unsigned int thread_ofs = 0; 
 
         // Iterate all blocks in current thread.
         for(int i=0; i<block_num; i++)
         {
             // Block initialization.
+        
             block_start = start + i * 32;
             block_end = (block_start+32) > end ? end : block_start+32;
-            float data_recip;
+            float data_recip, data_recip1, data_recip2, data_recip3;
             int s;
-            int curr_quant, max_quant=0;
+            int max_quant=0;
             int curr_block = start_block + i;
             unsigned int sign_flag = 0;
             int temp_fixed_rate;
-            
-            // Prequantization, get absolute value for each data.
-            for(int j=block_start; j<block_end; j++)
-            {
+            int j = block_start;
+            int parallel_iters = 0;
+            int sequential_iters = 0;
+            __m128 data_recip_vec;
+            __m128i s_vals, curr_quant_vals,bools_temp,sign_mask, abs_vals;
+
+            //Prequantization, get absolute value for each data.
+            for( ; j<=block_end-4; j+=4){
                 // Prequantization.
-                data_recip = oriData[j] * recip_precision;
-                s = data_recip >= -0.5f ? 0 : 1;
-                curr_quant = (int)(data_recip + 0.5f) - s;
-                // Get sign data.
-                sign_ofs = j % 32;
-                sign_flag |= (curr_quant < 0) << (31 - sign_ofs);
-                // Get absolute quantization code.
-                max_quant = max_quant > abs(curr_quant) ? max_quant : abs(curr_quant);
-                absQuant[j] = abs(curr_quant);
+                
+                data_recip_vec = _mm_mul_ps( _mm_load_ps(&oriData[j]),  _mm_set1_ps(recip_precision));
+                s_vals = _mm_srli_epi32(
+                                    _mm_castps_si128( _mm_cmplt_ps(data_recip_vec, _mm_set1_ps(-0.5f))),
+                                    31);
+                curr_quant_vals = _mm_sub_epi32(
+                                                _mm_cvttps_epi32(_mm_add_ps(data_recip_vec, _mm_set1_ps(0.5f))), 
+                                                s_vals
+                                            );
+                bools_temp = _mm_and_si128(_mm_cmplt_epi32( curr_quant_vals, _mm_set1_epi32(0)),
+                                              _mm_set_epi32(
+                                                (1 << (31 - ((j + 3) % 32))),  
+                                                (1 << (31 - ((j + 2) % 32))),
+                                                (1 << (31 - ((j + 1) % 32))),
+                                                (1 << (31 - (j % 32)))
+                ));
+                int bool_vals_temp[4];
+                _mm_store_si128((__m128i*)bool_vals_temp, bools_temp);
+                sign_flag |= (bool_vals_temp[0] | bool_vals_temp[1]| bool_vals_temp[2]| bool_vals_temp[3]);  
+                
+                sign_mask = _mm_srai_epi32(curr_quant_vals, 31); // Extract sign bits
+                abs_vals = _mm_sub_epi32(_mm_xor_si128(curr_quant_vals, sign_mask), sign_mask);
+                _mm_store_si128((__m128i*)&absQuant[j], abs_vals);
+                
+                max_quant = max_quant > absQuant[j] ? max_quant : absQuant[j]; // use or to find the maximum quant                
+                max_quant = max_quant > absQuant[j+1] ? max_quant : absQuant[j+1]; // use or to find the maximum quant
+                max_quant = max_quant > absQuant[j+2] ? max_quant : absQuant[j+2]; // use or to find the maximum quant
+                max_quant = max_quant > absQuant[j+3] ? max_quant : absQuant[j+3]; // use or to find the maximum quant               
+                parallel_iters++;
             }
+            int curr_quant;
+            //non-parallel implementation for the rest of the data (<4)
+
+            
 
             // Record fixed-length encoding rate for each block.
+            //TODO: Not sure how to make this faster
             signFlag[curr_block] = sign_flag;
             temp_fixed_rate = max_quant==0 ? 0 : sizeof(int) * 8 - __builtin_clz(max_quant);
             fixedRate[curr_block] = temp_fixed_rate;
             cmpData[curr_block] = (unsigned char)temp_fixed_rate;
 
             // Inner thread prefix-sum.
-            thread_ofs += temp_fixed_rate ? (32+temp_fixed_rate*32)/8 : 0;
+            thread_ofs += temp_fixed_rate ? (32+temp_fixed_rate*32)/8 : 0; //could probably be faster. when unrolling, store values and do sophisticated prefix sum algorithm 
         }
 
         // Store thread ofs to global varaible, used for later global prefix-sum.
         threadOfs[thread_id] = thread_ofs;
         #pragma omp barrier
+        t_quantize = omp_get_wtime()- t_start;
+        t_start = omp_get_wtime();
 
         // Exclusive prefix-sum.
         unsigned int global_ofs = 0;
         for(int i=0; i<thread_id; i++) global_ofs += threadOfs[i];
         unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS;
 
+        t_prefix = omp_get_wtime() - t_start;
+        t_start = omp_get_wtime();
         // Fixed-length encoding and store data to compressed data.
+        
+        
         for(int i=0; i<block_num; i++)
         {
             // Block initialization.
@@ -94,37 +151,38 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                 cmpData[cmp_byte_ofs++] = 0xff & sign_flag;
 
                 // Retrieve quant data for one block.
-                unsigned char tmp_char0, tmp_char1, tmp_char2, tmp_char3;
+                unsigned char tmp_char[4];
                 int mask = 1;
-                for(int j=0; j<temp_fixed_rate; j++)
-                {
+                
+                for(int j=0; j<temp_fixed_rate; j++){
                     // Initialization.
-                    tmp_char0 = 0;
-                    tmp_char1 = 0;
-                    tmp_char2 = 0;
-                    tmp_char3 = 0;
+                    tmp_char[0] = 0; tmp_char[1] = 0; tmp_char[2] = 0; tmp_char[3] = 0;
+                    
+                    for(int k = 0; k < 4; k++){
+                        __m128i mask_block = _mm_set1_epi32(mask);
+                        __m128i block= _mm_loadu_si128((__m128i *)&absQuant[block_start + 8*k]);
+                        __m128i result = _mm_srli_epi32( _mm_and_si128(block, mask_block), j);
+                        __m128i block1= _mm_loadu_si128((__m128i *)&absQuant[block_start + 4 + 8*k]);
+                        __m128i result1 = _mm_srli_epi32( _mm_and_si128(block1, mask_block), j);
 
-                    // Get ith bit in 0~7 quant, and store to tmp_char0.
-                    for(int k=block_start; k<block_start+8; k++)
-                        tmp_char0 |= (((absQuant[k] & mask) >> j) << (7+block_start-k));
-                    // Get ith bit in 8~15 quant, and store to tmp_char1.
-                    for(int k=block_start+8; k<block_start+16; k++)
-                        tmp_char1 |= (((absQuant[k] & mask) >> j) << (15+block_start-k));
-                    // Get ith bit in 16~23 quant, and store to tmp_char2.
-                    for(int k=block_start+16; k<block_start+24; k++)
-                        tmp_char2 |= (((absQuant[k] & mask) >> j) << (23+block_start-k));
-                    // Get ith bit in 24~31 quant, and store to tmp_char3.
-                    for(int k=block_start+24; k<block_end; k++)
-                        tmp_char3 |= (((absQuant[k] & mask) >> j) << (31+block_start-k));
-
-                    // Store data to compressed data array.
-                    cmpData[cmp_byte_ofs++] = tmp_char0;
-                    cmpData[cmp_byte_ofs++] = tmp_char1;
-                    cmpData[cmp_byte_ofs++] = tmp_char2;
-                    cmpData[cmp_byte_ofs++] = tmp_char3;
+                        tmp_char[k] |= _mm_extract_epi32(result, 0) << 7;
+                        tmp_char[k] |= _mm_extract_epi32 (result, 1) << 6;
+                        tmp_char[k] |= _mm_extract_epi32 (result, 2) << 5;
+                        tmp_char[k] |= _mm_extract_epi32 (result, 3) << 4;
+                        tmp_char[k] |= _mm_extract_epi32(result1, 0) << 3;
+                        tmp_char[k] |= _mm_extract_epi32 (result1, 1) << 2;
+                        tmp_char[k] |= _mm_extract_epi32 (result1, 2) << 1;
+                        tmp_char[k] |= _mm_extract_epi32 (result1, 3) << 0;
+                    
+                    }
+                    cmpData[cmp_byte_ofs++] = tmp_char[0];
+                    cmpData[cmp_byte_ofs++] = tmp_char[1];
+                    cmpData[cmp_byte_ofs++] = tmp_char[2];
+                    cmpData[cmp_byte_ofs++] = tmp_char[3];
                     mask <<= 1;
                 }
             }
+               
         }
         
         // Return the compression data length.
@@ -135,6 +193,17 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             *cmpSize = (size_t)(cmpBlockInBytes + block_num * NUM_THREADS);
         }
     }
+    #pragma omp barrier
+    t_encoding = omp_get_wtime() - t_start;
+    t_end = omp_get_wtime();
+    double total_time = (t_end - t_total_start) * 1000;
+    double quantize_time = ( (t_quantize)) * 1000;
+    double encoding_time = ((t_encoding)) * 1000;
+    double prefix_time = ((t_prefix)) * 1000;
+    
+
+    printf("quantize_time=%fms, prefix time=%fms, encoding time=%fms, ratio = %.2f:%.2f:%.2f, total=%fms\n", 
+        quantize_time, prefix_time, encoding_time, quantize_time/total_time, prefix_time/total_time, encoding_time/total_time, total_time);
 }
 
 void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQuant, int* fixedRate, unsigned int* threadOfs, size_t nbEle, float errorBound)
@@ -240,3 +309,125 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
         }
     }
 }
+
+
+//Prequantization, get absolute value for each data.
+            //8-wide vectorization 
+            // for( ; j<=block_end-4; j+=8)
+            // {
+               
+            //     // Prequantization.
+                
+            //     data_recip_vec = _mm256_mul_ps( _mm256_load_ps(&oriData[j]),  _mm256_set1_ps(recip_precision));
+            //     s_vals = _mm256_srli_epi32(
+            //                         _mm256_castps_si256( _mm256_cmplt_ps(data_recip_vec, _mm256_set1_ps(-0.5f))),
+            //                         31);
+            //     curr_quant_vals = _mm256_sub_epi32(
+            //                                     _mm256_cvttps_epi32(_mm256_add_ps(data_recip_vec, _mm256_set1_ps(0.5f))), 
+            //                                     s_vals
+            //                                 );
+            //     bools_temp = _mm256_and_si256(_mm256_cmpgt_epi32( curr_quant_vals, _mm256_set1_epi32(0)),
+            //                                   _mm256_set_epi32(
+            //                                     (1 << (31 - ((j + 3) % 32))),  
+            //                                     (1 << (31 - ((j + 2) % 32))),
+            //                                     (1 << (31 - ((j + 1) % 32))),
+            //                                     (1 << (31 - (j % 32)))
+                                             
+            //     ));
+            //     int bool_vals_temp[4];
+            //     _mm_store_si128((__m128i*)bool_vals_temp, bools_temp);
+            //     //printf("bool_vals = %d %d %d %d\n", bool_vals[0] << (31 - j % 32) , bool_vals[1]<< (31 - ((j+1) % 32)), bool_vals[2]<< (31 - ((j+2) % 32)), bool_vals[3]<< (31 - ((j + 3) % 32)));
+            //     //printf("bool_vals_temp = %d %d %d %d\n", bool_vals_temp[0], bool_vals_temp[1], bool_vals_temp[2], bool_vals_temp[3]);
+            //     sign_flag |= (bool_vals_temp[0] | bool_vals_temp[1]| bool_vals_temp[2]| bool_vals_temp[3]);  
+                
+            //     sign_mask = _mm_srai_epi32(curr_quant_vals, 31); // Extract sign bits
+            //     abs_vals = _mm_sub_epi32(_mm_xor_si128(curr_quant_vals, sign_mask), sign_mask);
+            //     _mm_store_si128((__m128i*)&absQuant[j], abs_vals);
+                
+            //     // int max01 = absQuant[j] > absQuant[j+1] ? absQuant[j] : absQuant[j+1]; // use or to find the maximum quant
+            //     // int max23 = absQuant[j+2] > absQuant[j+3] ? absQuant[j+2] : absQuant[j+3]; // use or to find the maximum quant
+            //     // max_quant = max01 > max23 ? max01 : max23; // use or to find the maximum quant
+            //     max_quant = max_quant > absQuant[j] ? max_quant : absQuant[j]; // use or to find the maximum quant
+            //     max_quant = max_quant > absQuant[j+1] ? max_quant : absQuant[j+1]; // use or to find the maximum quant
+            //     max_quant = max_quant > absQuant[j+2] ? max_quant : absQuant[j+2]; // use or to find the maximum quant
+            //     max_quant = max_quant > absQuant[j+3] ? max_quant : absQuant[j+3]; // use or to find the maximum quant               
+            //     parallel_iters++;
+            // }
+
+// tmp_char[0] |= (((absQuant[block_start] & mask) >> j) << (7));
+                    // tmp_char[0] |= (((absQuant[block_start+1] & mask) >> j) << (6));
+                    // tmp_char[0] |= (((absQuant[block_start+2] & mask) >> j) << (5));
+                    // tmp_char[0] |= (((absQuant[block_start+3] & mask) >> j) << (4));
+                    // tmp_char[0] |= (((absQuant[block_start+4] & mask) >> j) << (3));
+                    // tmp_char[0] |= (((absQuant[block_start+5] & mask) >> j) << (2));
+                    // tmp_char[0] |= (((absQuant[block_start+6] & mask) >> j) << (1));
+                    // tmp_char[0] |= (((absQuant[block_start+7] & mask) >> j) << (0));
+
+                    // tmp_char[1] |= (((absQuant[block_start+8] & mask) >> j) << (7));
+                    // tmp_char[1] |= (((absQuant[block_start+8 + 1] & mask) >> j) << (6));
+                    // tmp_char[1] |= (((absQuant[block_start+8 + 2] & mask) >> j) << (5));
+                    // tmp_char[1] |= (((absQuant[block_start+8 + 3] & mask) >> j) << (4));
+                    // tmp_char[1] |= (((absQuant[block_start+8 + 4] & mask) >> j) << (3));
+                    // tmp_char[1] |= (((absQuant[block_start+8 + 5] & mask) >> j) << (2));
+                    // tmp_char[1] |= (((absQuant[block_start+8 + 6] & mask) >> j) << (1));
+                    // tmp_char[1] |= (((absQuant[block_start+8 + 7] & mask) >> j) << (0));
+
+                    // tmp_char[2] |= (((absQuant[block_start+16] & mask) >> j) << (7));
+                    // tmp_char[2] |= (((absQuant[block_start+16 + 1] & mask) >> j) << (6));
+                    // tmp_char[2] |= (((absQuant[block_start+16 + 2] & mask) >> j) << (5));
+                    // tmp_char[2] |= (((absQuant[block_start+16 + 3] & mask) >> j) << (4));
+                    // tmp_char[2] |= (((absQuant[block_start+16 + 4] & mask) >> j) << (3));
+                    // tmp_char[2] |= (((absQuant[block_start+16 + 5] & mask) >> j) << (2));
+                    // tmp_char[2] |= (((absQuant[block_start+16 + 6] & mask) >> j) << (1));
+                    // tmp_char[2] |= (((absQuant[block_start+16 + 7] & mask) >> j) << (0));
+
+                    // tmp_char[3] |= (((absQuant[block_start+24] & mask) >> j) << (7));
+                    // tmp_char[3] |= (((absQuant[block_start+24 + 1] & mask) >> j) << (6));
+                    // tmp_char[3] |= (((absQuant[block_start+24 + 2] & mask) >> j) << (5));
+                    // tmp_char[3] |= (((absQuant[block_start+24 + 3] & mask) >> j) << (4));
+                    // tmp_char[3] |= (((absQuant[block_start+24 + 4] & mask) >> j) << (3));
+                    // tmp_char[3] |= (((absQuant[block_start+24 + 5] & mask) >> j) << (2));
+                    // tmp_char[3] |= (((absQuant[block_start+24 + 6] & mask) >> j) << (1));
+                    // tmp_char[3] |= (((absQuant[block_start+24 + 7] & mask) >> j) << (0));
+
+                    // for( ; j<block_end; j++)
+            // {
+            //     // Prequantization.
+
+            //     data_recip = oriData[j] * recip_precision; //unroll and use SIMD for this operation
+            //     //printf("original data = 0x%08x\n", *((u_int32_t*)&oriData[j]));
+
+            //     s = data_recip >= -0.5f ? 0 : 1;
+            //     curr_quant = (int)(data_recip + 0.5f) - s;
+
+            //     // Get sign data.
+            //     sign_ofs = j % 32; // should inline this variable, no reason for it to be a declared variable
+            //     sign_flag |= (curr_quant < 0) << (31 - sign_ofs); //critical region, 
+
+            //     // Get absolute quantization code.
+            //     max_quant = max_quant > abs(curr_quant) ? max_quant : abs(curr_quant); // use or to find the maximum quant
+
+
+            //     absQuant[j] = abs(curr_quant); //unroll and use SIMD for this operation
+            //     sequential_iters++;
+            // }
+            //printf("Parallel iters=%d, sequential iters=%d\n", parallel_iters, sequential_iters);
+
+            // for(int k=block_start; k<block_start+8; k+=1){
+                        
+                    //     offset = 7-k + block_start;
+                        
+                        
+                    //     tmp_char[0] |= (((absQuant[k] & mask) >> j) << (offset));
+
+                    //     tmp_char[1] |= (((absQuant[k+8] & mask) >> j) << (offset));
+                    
+                    //     tmp_char[2] |= (((absQuant[k+16] & mask) >> j) << (offset));
+                   
+                    //     tmp_char[3] |= (((absQuant[k+24] & mask) >> j) << (offset));
+
+
+
+                    //     //printf("k=%d: ", k);
+                    //     //printBits(tmp_char, 0, 4);
+                    // }
