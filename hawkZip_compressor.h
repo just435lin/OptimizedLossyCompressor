@@ -145,7 +145,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             int curr_block = start_block + i;
             int temp_fixed_rate = fixedRate[curr_block];
             unsigned int sign_flag = signFlag[curr_block];
-            printf("tfr=%d\n", temp_fixed_rate);
+            //printf("tfr=%d\n", temp_fixed_rate);
             // Operation for each block, if zero block then do nothing.
             if(temp_fixed_rate)
             {
