@@ -26,7 +26,6 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
 {
    
     double t_start,t_quantize, t_prefix, t_encoding, t_total_start, t_end;
-    
     t_total_start = omp_get_wtime();
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
