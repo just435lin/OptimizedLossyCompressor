@@ -6,7 +6,7 @@
 #include <omp.h>
 #include <time.h>
 
-#define NUM_THREADS 1
+#define NUM_THREADS 8
 
 int max(int a, int b) {
     return (a > b) ? a : b;
@@ -18,7 +18,6 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
    
     double t_start,t_quantize, t_prefix, t_encoding, t_total_start, t_end;
     t_total_start = omp_get_wtime();
-    // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
     omp_set_num_threads(NUM_THREADS);
     // hawkZip parallel compression begin.
@@ -99,7 +98,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             cmpData[curr_block] = (unsigned char)temp_fixed_rate;
 
             // Inner thread prefix-sum.
-            thread_ofs += temp_fixed_rate ? (32+temp_fixed_rate*32)/8 : 0; //could probably be faster. when unrolling, store values and do sophisticated prefix sum algorithm 
+            thread_ofs += temp_fixed_rate ? (32+temp_fixed_rate*32)/8 : 0; 
         }
 
         // Store thread ofs to global varaible, used for later global prefix-sum.
@@ -126,7 +125,6 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             int curr_block = start_block + i;
             int temp_fixed_rate = fixedRate[curr_block];
             unsigned int sign_flag = signFlag[curr_block];
-            //printf("tfr=%d\n", temp_fixed_rate);
             // Operation for each block, if zero block then do nothing.
             if(temp_fixed_rate)
             {
@@ -135,38 +133,29 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                 cmpData[cmp_byte_ofs++] = 0xff & (sign_flag >> 16);
                 cmpData[cmp_byte_ofs++] = 0xff & (sign_flag >> 8);
                 cmpData[cmp_byte_ofs++] = 0xff & sign_flag;
-
-                // Retrieve quant data for one block.
-                unsigned char tmp_char[4];
-
-
                 __m128i mask = _mm_set1_epi32(1);
 
                 //TODO potentially invert these two loops so that the acess pattern (of absQuat) is more predictable
                 for(int j=0; j<temp_fixed_rate; j++){
-                    // Initialization.
-                    //tmp_char[0] = 0; tmp_char[1] = 0; tmp_char[2] = 0; tmp_char[3] = 0;
-                    
-                    
                     
                     __m128i block= _mm_loadu_si128((__m128i *)&absQuant[block_start]);
-                    __m128i block1= _mm_loadu_si128((__m128i *)&absQuant[block_start + 4]);  
-                    __m128i block2= _mm_loadu_si128((__m128i *)&absQuant[block_start + 8]);
-                    __m128i block3= _mm_loadu_si128((__m128i *)&absQuant[block_start + 12]);  
-                    __m128i block4= _mm_loadu_si128((__m128i *)&absQuant[block_start + 16]);
-                    __m128i block5= _mm_loadu_si128((__m128i *)&absQuant[block_start + 20]);  
-                    __m128i block6= _mm_loadu_si128((__m128i *)&absQuant[block_start + 24]);
-                    __m128i block7= _mm_loadu_si128((__m128i *)&absQuant[block_start + 28]);  
-
-
                     __m128i result = _mm_srli_epi32( _mm_and_si128(block, mask), j);
+                    __m128i block1= _mm_loadu_si128((__m128i *)&absQuant[block_start + 4]);  
                     __m128i result1 = _mm_srli_epi32( _mm_and_si128(block1, mask), j);
+                    __m128i block2= _mm_loadu_si128((__m128i *)&absQuant[block_start + 8]);
                     __m128i result2 = _mm_srli_epi32( _mm_and_si128(block2, mask), j);
+                    __m128i block3= _mm_loadu_si128((__m128i *)&absQuant[block_start + 12]);  
                     __m128i result3 = _mm_srli_epi32( _mm_and_si128(block3, mask), j);
+                    __m128i block4= _mm_loadu_si128((__m128i *)&absQuant[block_start + 16]);
                     __m128i result4 = _mm_srli_epi32( _mm_and_si128(block4, mask), j);
+                    __m128i block5= _mm_loadu_si128((__m128i *)&absQuant[block_start + 20]);  
                     __m128i result5 = _mm_srli_epi32( _mm_and_si128(block5, mask), j);
+                    __m128i block6= _mm_loadu_si128((__m128i *)&absQuant[block_start + 24]);
                     __m128i result6 = _mm_srli_epi32( _mm_and_si128(block6, mask), j);
+                    __m128i block7= _mm_loadu_si128((__m128i *)&absQuant[block_start + 28]);  
                     __m128i result7 = _mm_srli_epi32( _mm_and_si128(block7, mask), j);
+
+
 
                     cmpData[cmp_byte_ofs++] |= _mm_extract_epi32 (result, 0) << 7
                                 | _mm_extract_epi32 (result, 1) << 6
@@ -200,10 +189,6 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                                 | _mm_extract_epi32 (result7, 1) << 2
                                 | _mm_extract_epi32 (result7, 2) << 1
                                 | _mm_extract_epi32 (result7, 3) << 0;
-                    
-                    
-                    
-                    
                     mask = _mm_slli_epi32(mask, 1);
                 }
             }
