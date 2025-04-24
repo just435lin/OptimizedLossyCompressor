@@ -236,7 +236,9 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
         int start_block = thread_id * block_num;
         unsigned int thread_ofs = 0;
         long paralell_iters, sequential_iters = 0;
-        t_start = omp_get_wtime();
+        if(omp_get_thread_num() == 0){
+            t_start = omp_get_wtime();
+        }
         int i  = start_block;
         
         // Iterate all blocks in current thread.
@@ -307,19 +309,22 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             sequential_iters++;
         }
 
-        printf("sequentially loaded elements: %ld, vectorized loaded elements:%ld\n", sequential_iters, paralell_iters*16);
+        printf("sequentially loaded elements: %ld, vectorized loaded elements:%ld total elements =%ld\n", sequential_iters, paralell_iters*16, nbEle);
         
 
         // Store thread ofs to global varaible, used for later global prefix-sum.
         threadOfs[thread_id] = thread_ofs;
         #pragma omp barrier
-        t_read_rates = omp_get_wtime() - t_start;
+        if(omp_get_thread_num() == 0){
+            t_read_rates = omp_get_wtime() - t_start;
+        }
         // Exclusive prefix-sum.
         unsigned int global_ofs = 0;
         for(int i=0; i<thread_id; i++) global_ofs += threadOfs[i];
         unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS;
-
-        t_start = omp_get_wtime();
+        if(omp_get_thread_num() == 0){
+            t_start = omp_get_wtime();
+        }
         // Restore decompressed data.
         for(int i=0; i<block_num; i++)
         {
@@ -351,23 +356,27 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                     tmp_char3 = cmpData[cmp_byte_ofs++];
 
                     // Get ith bit in 0~7 abs quant from global memory.
-                    for(int k=block_start; k<block_start+8; k++)
+                    for(int k=block_start; k<block_start+8; k++){
                         absQuant[k] |= ((tmp_char0 >> (7+block_start-k)) & 0x00000001) << j;
 
-                    // Get ith bit in 8~15 abs quant from global memory.
-                    for(int k=block_start+8; k<block_start+16; k++)
-                        absQuant[k] |= ((tmp_char1 >> (15+block_start-k)) & 0x00000001) << j;
+                    
+                    
+                        absQuant[k+8] |= ((tmp_char1 >> (15+block_start-(k+8))) & 0x00000001) << j;
 
-                    // Get ith bit in 16-23 abs quant from global memory.
-                    for(int k=block_start+16; k<block_start+24; k++)
-                        absQuant[k] |= ((tmp_char2 >> (23+block_start-k)) & 0x00000001) << j;
+                   
+                    
+                        absQuant[k+16] |= ((tmp_char2 >> (23+block_start-(k+16))) & 0x00000001) << j;
 
-                    // Get ith bit in 24-31 abs quant from global memory.
-                    for(int k=block_start+24; k<block_end; k++)
-                        absQuant[k] |= ((tmp_char3 >> (31+block_start-k)) & 0x00000001) << j;
+                    
+                   
+                        absQuant[k+24] |= ((tmp_char3 >> (31+block_start-(k+24))) & 0x00000001) << j;
+                    }
                 }
-                t_quant_read = omp_get_wtime() - t_start;
-                t_start = omp_get_wtime();
+                if(omp_get_thread_num() == 0){
+                    t_quant_read = omp_get_wtime() - t_start;
+                    t_start = omp_get_wtime();
+                }
+                
                 // De-quantize and store data back to decompression data.
                 int currQuant;
                 for(int i=block_start; i<block_end; i++)
@@ -379,11 +388,14 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                         currQuant = absQuant[i];
                     decData[i] = currQuant * errorBound * 2;
                 }
-                t_sign_read = omp_get_wtime() - t_start;
+                if(omp_get_thread_num() == 0){
+                    t_sign_read = omp_get_wtime() - t_start;
+                    t_end = omp_get_wtime();
+                }
             }
         }
     }
-    t_end = omp_get_wtime();
+    
     double total_time = (t_end - t_total_start) * 1000;
     double quantize_time = ( (t_quant_read)) * 1000;
     double rates_time = ((t_read_rates)) * 1000;
