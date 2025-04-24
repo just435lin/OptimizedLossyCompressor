@@ -4,7 +4,7 @@
 #include <emmintrin.h>
 #include <omp.h>
 
-#define NUM_THREADS 4
+#define NUM_THREADS 1
 #define BLOCK_SIZE 33
 
 //#define COMPRESS_DEBUG_PRINT
@@ -16,7 +16,6 @@ void printbin(int val) {
   for (int i = 0; i < 32; i ++) {
     printf("%d ", (val >> (31 - i)) & 1);
   }
-  //printf("\n");
 }
 #endif
 
@@ -119,12 +118,15 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                 #endif
             }
 
-            
+            char all_signs = (sign_flag == 0 || sign_flag == 0xFFFFFFFF) & 1;            
+
             // Record fixed-length encoding rate for each block.
             signFlag[curr_block] = sign_flag;
             temp_fixed_rate = max_quant==0 ? 0 : (32 - __builtin_clz(max_quant));
-            fixedRate[curr_block] = temp_fixed_rate;
-            cmpData[curr_block] = (unsigned char)temp_fixed_rate;
+
+            
+            // Inner thread prefix-sum.
+            thread_ofs += ((1+temp_fixed_rate+!all_signs)<<2);
 
             #ifdef COMPRESS_DEBUG_PRINT
                 if (chosen_block ==curr_block) {
@@ -136,13 +138,15 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                     printbin(sign_flag);
                     printf("\n");
 
-                    printf("bytes needed: %d\n", ((temp_fixed_rate+1)<<2));
+                    printf("bytes needed: %d\n", ((1+temp_fixed_rate+!all_signs)<<2));
                 }
             #endif
 
+            temp_fixed_rate |= (all_signs << 5) | ((all_signs & sign_flag) << 6);
+            fixedRate[curr_block] = temp_fixed_rate;
+            cmpData[curr_block] = (unsigned char)temp_fixed_rate;
 
-            // Inner thread prefix-sum.
-            thread_ofs += 4 + (temp_fixed_rate ? ((temp_fixed_rate+1)<<2) : 0);
+
         }
 
         // Store thread ofs to global varaible, used for later global prefix-sum.
@@ -163,6 +167,8 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             block_end = block_start + BLOCK_SIZE;
             int curr_block = start_block + i;
             int temp_fixed_rate = fixedRate[curr_block];
+            int all_signs = temp_fixed_rate & (1 << 5);
+            temp_fixed_rate &= 0x1F;
 	
             // directly store first floating point of block...
             memcpy(&cmpData[cmp_byte_ofs], &absQuant[block_start], 4);
@@ -172,10 +178,11 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             // Operation for each block, if zero block then do nothing.
             if(temp_fixed_rate)
             {
-                
-                // Retrieve sign information for one block.
-                memcpy(&cmpData[cmp_byte_ofs], &signFlag[curr_block], 4);
-                cmp_byte_ofs += 4;
+                if (!all_signs) {
+                    // Retrieve sign information for one block.
+                    memcpy(&cmpData[cmp_byte_ofs], &signFlag[curr_block], 4);
+                    cmp_byte_ofs += 4;
+                }
 
                 // Retrieve quant data for one block.
 
@@ -215,6 +222,8 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             block_end = (block_start + BLOCK_SIZE > end) ? end : block_start + BLOCK_SIZE;
             int curr_block = start_block + (block_num-1);
             int temp_fixed_rate = fixedRate[curr_block];
+            int all_signs = temp_fixed_rate & (1 << 5);
+            temp_fixed_rate &= 0x1F;
 	
             // directly store first floating point of block...
             memcpy(&cmpData[cmp_byte_ofs], &absQuant[block_start], 4);
@@ -225,9 +234,11 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             if(temp_fixed_rate)
             {
                 
-                // Retrieve sign information for one block.
-                memcpy(&cmpData[cmp_byte_ofs], &signFlag[curr_block], 4);
-                cmp_byte_ofs += 4;
+                if (!all_signs) {
+                    // Retrieve sign information for one block.
+                    memcpy(&cmpData[cmp_byte_ofs], &signFlag[curr_block], 4);
+                    cmp_byte_ofs += 4;
+                }
 
                 // Retrieve quant data for one block.
 
@@ -270,6 +281,11 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
 
 void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQuant, int* fixedRate, unsigned int* threadOfs, size_t nbEle, float errorBound)
 {
+
+    #ifdef COMPRESS_DEBUG_PRINT
+        printf("ENTER_DECOMPRESS\n");
+    #endif
+
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
     omp_set_num_threads(NUM_THREADS);
@@ -287,6 +303,10 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
         int start_block = thread_id * block_num;
         unsigned int thread_ofs = 0;
 
+        
+    #ifdef COMPRESS_DEBUG_PRINT
+        printf("ENTER_PARALLEL\n");
+    #endif
 
         // Iterate all blocks in current thread.
         for(int i=0; i<block_num; i++)
@@ -294,11 +314,26 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             // Retrieve fixed-rate for each block in the compressed data.
             int curr_block = start_block + i;
             int temp_fixed_rate = (int)cmpData[curr_block];
+            char all_signs = temp_fixed_rate & (1 << 5);
+            temp_fixed_rate &= 0x1F;
             fixedRate[curr_block] = temp_fixed_rate;
 
             // Inner thread prefix-sum.
-            thread_ofs += 4 + (temp_fixed_rate ? (((1+temp_fixed_rate)*32) >> 3) : 0);
+            thread_ofs += (1 + temp_fixed_rate+!all_signs)<<2;
+
+            #ifdef COMPRESS_DEBUG_PRINT
+                if (chosen_block == curr_block) 
+                {
+                    printf("Recovered needed bytes: %d\n", (1 + temp_fixed_rate+!all_signs)<<2);
+                }
+            #endif
+
         }
+
+        
+    #ifdef COMPRESS_DEBUG_PRINT
+        printf("ENTER PREFIX_SUM\n");
+    #endif
 
         // Store thread ofs to global varaible, used for later global prefix-sum.
         threadOfs[thread_id] = thread_ofs;
@@ -318,6 +353,7 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             block_end = block_start+BLOCK_SIZE;
             int curr_block = start_block + i;
             int temp_fixed_rate = fixedRate[curr_block];
+            char all_signs = cmpData[curr_block] & (3 << 5);
             unsigned int sign_flag = 0;
             int sign_ofs;
 
@@ -338,8 +374,13 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             // Operation for each block, if zero block then do nothing.
             if(temp_fixed_rate)
             {
-                memcpy((char*)&sign_flag, &cmpData[cmp_byte_ofs],4);
-                cmp_byte_ofs += 4;
+                if(all_signs) {
+                    sign_flag = (all_signs & (1 << 6)) ? 0xFFFFFFFF : 0;
+                }
+                else {
+                    memcpy((char*)&sign_flag, &cmpData[cmp_byte_ofs],4);
+                    cmp_byte_ofs += 4;
+                }
 
 
                 #ifdef COMPRESS_DEBUG_PRINT
@@ -420,6 +461,7 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             block_end = (block_start+BLOCK_SIZE) > end ? end : block_start+BLOCK_SIZE;
             int curr_block = start_block + (block_num-1);
             int temp_fixed_rate = fixedRate[curr_block];
+            char all_signs = cmpData[curr_block] & (3 << 5);
             unsigned int sign_flag = 0;
             int sign_ofs;
 
@@ -440,8 +482,13 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             // Operation for each block, if zero block then do nothing.
             if(temp_fixed_rate)
             {
-                memcpy((char*)&sign_flag, &cmpData[cmp_byte_ofs],4);
-                cmp_byte_ofs += 4;
+                if(all_signs) {
+                    sign_flag = (all_signs & (1 << 6)) ? 0xFFFFFFFF : 0;
+                }
+                else {
+                    memcpy((char*)&sign_flag, &cmpData[cmp_byte_ofs],4);
+                    cmp_byte_ofs += 4;
+                }
 
 
                 #ifdef COMPRESS_DEBUG_PRINT
