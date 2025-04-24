@@ -5,165 +5,259 @@
 #include <omp.h>
 
 #define NUM_THREADS 4
+#define BLOCK_SIZE 33
 
-#define BLOCKSIZE 33
+//#define COMPRESS_DEBUG_PRINT
 
-void hawkZip_compress_kernel(
-    float* oriData,            // a pointer to the memory containing floats to compress (accessed ber f32)
-    unsigned char* cmpData,    // a pointer to the memory to write compressed data to   (accessed per-byte)
-    int* absQuant,             // array of per fp quantization
-    unsigned int* signFlag,    // array of per-block sign flags
-    int* fixedRate,            // array of each block's size.
-    unsigned int* threadOfs,   // available space for an array of how much compressed memory is needed per thread. (written to by method)
-    size_t nbEle,              // size of original memory as interpreted as 32f.
-    size_t* cmpSize,           // available space for size of compressed memory (written to by method, not a parameter!)
-    float errorBound           // maximum error allowed
-    )
+#ifdef COMPRESS_DEBUG_PRINT
+int chosen_block;
+
+void printbin(int val) {
+  for (int i = 0; i < 32; i ++) {
+    printf("%d ", (val >> (31 - i)) & 1);
+  }
+  //printf("\n");
+}
+#endif
+
+void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQuant, unsigned int* signFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
 {
+    #ifdef COMPRESS_DEBUG_PRINT
+    	printf("ENTER COMPRESS\n");
+    #endif
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
-    int block_num = (chunk_size+BLOCKSIZE-1)/BLOCKSIZE;            // the number of blocks per chunk ( could be moved outside parallel? )
     omp_set_num_threads(NUM_THREADS);
+    int block_num = (chunk_size+BLOCK_SIZE-1)/BLOCK_SIZE;
     
+    #ifdef COMPRESS_DEBUG_PRINT
+        srand(getpid());
+        chosen_block = rand() % block_num;
+        printf("INSPECTING BLOCK %d\n", chosen_block);
+    #endif
+   
     // hawkZip parallel compression begin.
     #pragma omp parallel
     {
-        // Divides the original data into per-thread 'chunks'
-        int thread_id = omp_get_thread_num();             // this thread's id
-        int chunk_start = thread_id * chunk_size;         // where in the original memory the chunk begins
-        int chunk_end = chunk_start + chunk_size;         // where in the original memory the chunk ends
-        if (chunk_end > nbEle) chunk_end = nbEle;         //  > prevent the chunk from exceeding the bounds of the original data
-        
-        // Divides the per-thread 'chunks' into 'blocks' of 32 floating-point numbers
-        int start_block = thread_id * block_num;       // the first block in memory
-        int block_start, block_end;                    // where the current block starts and ends
-        
-        const float recip_precision = 0.5f/errorBound; //
-        unsigned int thread_ofs = 0;
-        
+        // Divide data chunk for each thread
+        int thread_id = omp_get_thread_num();
+        int start = thread_id * chunk_size;
+        int end = start + chunk_size;
+        if(end > nbEle) end = nbEle;
+        int start_block = thread_id * block_num;
+        int block_start, block_end;
+        const float recip_precision = 0.5f/errorBound;
+        int sign_ofs;
+        unsigned int thread_ofs = 0; 
+
+        #ifdef COMPRESS_DEBUG_PRINT
+            if (thread_id == 0)
+                printf("ERROR BOUND: %f\n", errorBound);
+        #endif
+
 
         // Iterate all blocks in current thread.
         for(int i=0; i<block_num; i++)
         {
             // Block initialization.
-            block_start = chunk_start + i * BLOCKSIZE;                               // 
-            block_end = (block_start+BLOCKSIZE) > chunk_end ? chunk_end : block_start+BLOCKSIZE;
-            
+            block_start = start + i * BLOCK_SIZE;
+            block_end = (block_start+BLOCK_SIZE) > end ? end : block_start+BLOCK_SIZE;
             float data_recip;
             int s;
-            int curr_quant, max_quant = 0;     // the data's current quantization
-            int curr_block = start_block + i;  // the current block (across all memory)
+            int curr_quant, prev_quant = 0;
+            unsigned int max_quant=0;
+            int curr_block = start_block + i;
             unsigned int sign_flag = 0;
             int temp_fixed_rate;
-            
-            float oriStart = oriData[block_start];
-            data_recip = oriStart * recip_precision;
-            curr_quant = (int)(data_recip + (data_recip < 0.0f ? -0.5f : 0.5f));
-            absQuant[block_start] = curr_quant;            
-            
-            // Over every value in the block.
-            // Prequantization, get absolute value for each data.
-            int loc = block_start + 1;
-            int j = 0;
-            do 
-            {
-                // Prequantization.
-                data_recip = (oriData[loc] - oriData[loc-1]) * recip_precision; // divide the data by errorBound ( and by 2?)
-                curr_quant = (int)(data_recip + (data_recip < 0.0f ? -0.5f : 0.5f)) ; // Round to nearest integer by truncating
-                
-                // Get sign data.
-                sign_flag |= (curr_quant < 0) << (31 - j);  // marking the sign of the quantization as a bitflag: 1 => negative, 0 => positive
-                
-                curr_quant = abs(curr_quant);
-                absQuant[loc] = curr_quant;                                         // write down the data
-                
-                // Get absolute quantization code.
-                max_quant |= curr_quant; // max_quant > curr_quant ? max_quant : curr_quant; // increase max_quant to keep quantization consistent within the block
-                
-                j++;
-                loc++;
-            } while (loc < block_end);
 
+            
+            // store the quantized first directly...
+            data_recip = (oriData[block_start]) * recip_precision;
+            curr_quant = data_recip < 0.0f ? (int)(data_recip - 0.5f) : (int)(data_recip + 0.5f);
+            absQuant[block_start] = curr_quant;
+            
+            
+            #ifdef COMPRESS_DEBUG_PRINT
+                if (chosen_block == curr_block)
+                {
+                    printf("first: %f quant: ", oriData[block_start]);
+                    printbin(curr_quant);
+                    printf("\n");
+                }
+            #endif
+            
+            // Prequantization, get absolute value for each data.
+            for(int j=0; j < 32 && j + block_start + 1 < block_end; j ++)
+            {
+                prev_quant = curr_quant;
+                int loc = j + block_start + 1;
+
+                // Prequantization.
+                data_recip = (oriData[loc]) * recip_precision;
+                curr_quant = data_recip < 0.0f ? (int)(data_recip - 0.5f) : (int)(data_recip + 0.5f);
+                
+
+                // Get sign data.
+                sign_flag |= (curr_quant < 0) << j;
+
+
+                int dif = abs(curr_quant) - abs(prev_quant);
+                int store = (dif<0) ? (abs(dif)<< 1)-1 : (dif << 1);
+
+                // Get absolute quantization code.
+                max_quant |= store;
+                absQuant[loc] = store;
+
+
+                #ifdef COMPRESS_DEBUG_PRINT
+                    if (chosen_block == curr_block)
+                    {
+                        printf("%d: orig: %f, absquant: %d, quant: ", j, oriData[loc], absQuant[loc]);
+                        printbin(store);
+                        printf("\n");
+                    }
+                #endif
+            }
+
+            
             // Record fixed-length encoding rate for each block.
-            signFlag[curr_block] = sign_flag;                                                 // the signs of each fp, represented as a bitfield.
-            temp_fixed_rate = max_quant==0 ? 0 : sizeof(int) * 8 - __builtin_clz(max_quant);  // # of bits needed per floating-point in block
-            fixedRate[curr_block] = temp_fixed_rate;                                          // store that in global
-            cmpData[curr_block] = (unsigned char)temp_fixed_rate;                             // and store it in the compressed data
+            signFlag[curr_block] = sign_flag;
+            temp_fixed_rate = max_quant==0 ? 0 : (32 - __builtin_clz(max_quant));
+            fixedRate[curr_block] = temp_fixed_rate;
+            cmpData[curr_block] = (unsigned char)temp_fixed_rate;
+
+            #ifdef COMPRESS_DEBUG_PRINT
+                if (chosen_block ==curr_block) {
+                    printf("max_quant: %d bitwise: ", max_quant);
+                    printbin(max_quant);
+                    printf("\n");
+
+                    printf("signs: ");
+                    printbin(sign_flag);
+                    printf("\n");
+
+                    printf("bytes needed: %d\n", ((temp_fixed_rate+1)<<2));
+                }
+            #endif
+
 
             // Inner thread prefix-sum.
-            thread_ofs += 4 + (temp_fixed_rate ? (32+temp_fixed_rate*32)/8 : 0);                    // # of bytes of memory this block needs in compressed      
+            thread_ofs += 4 + (temp_fixed_rate ? ((temp_fixed_rate+1)<<2) : 0);
         }
 
-        // Store thread ofs to global variable, used for prefix-sum.
+        // Store thread ofs to global varaible, used for later global prefix-sum.
         threadOfs[thread_id] = thread_ofs;
         #pragma omp barrier
 
         // Exclusive prefix-sum.
         unsigned int global_ofs = 0;
-        for(int i=0; i<thread_id; i++) global_ofs += threadOfs[i];
-        unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS;          // starting location in compressed memory
+        for(int i=thread_id; i--;) global_ofs += threadOfs[i];
+        unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS;
 
 
-        block_start = chunk_start;
-        block_end = chunk_start + BLOCKSIZE;
         // Fixed-length encoding and store data to compressed data.
-        for(int i=0; i<block_num; i++)
+        for(int i= 0; i< block_num-1; i++)
         {
-            int curr_block = start_block + i;                    // the current block;
-            int temp_fixed_rate = fixedRate[curr_block];         // # of bits needed per fp
-            unsigned int sign_flag;
-            
-            // Commit the first quant regardless
-            //*(int*)(&(cmpData[cmp_byte_ofs])) = absQuant[block_start];
-			memcpy(&(cmpData[cmp_byte_ofs]), &absQuant[block_start], 4);
+            // Block initialization.
+            block_start = start + i * BLOCK_SIZE;
+            block_end = block_start + BLOCK_SIZE;
+            int curr_block = start_block + i;
+            int temp_fixed_rate = fixedRate[curr_block];
+	
+            // directly store first floating point of block...
+            memcpy(&cmpData[cmp_byte_ofs], &absQuant[block_start], 4);
             cmp_byte_ofs += 4;
-            
+
+
             // Operation for each block, if zero block then do nothing.
             if(temp_fixed_rate)
             {
                 
-                sign_flag = signFlag[curr_block];
-                
-                // Commit sign information for one block.
-				memcpy(&(cmpData[cmp_byte_ofs]), &sign_flag, 4);
+                // Retrieve sign information for one block.
+                memcpy(&cmpData[cmp_byte_ofs], &signFlag[curr_block], 4);
                 cmp_byte_ofs += 4;
-                
 
-                // Commit quant data for one block.
-                // unsigned char tmp_char0, tmp_char1, tmp_char2, tmp_char3;
-                unsigned int tmp_dat;
-                int mask = 1;
-                for(int j=0; j<temp_fixed_rate; j++)
-                {
-                    // Initialization.
-                    tmp_dat = 0;
+                // Retrieve quant data for one block.
 
-                    int loc = block_start + 1;
-                    int fp = 0;
+                int data;
+                int loc;
+                int o;
+                for (int bit = temp_fixed_rate; bit --;) {
+                    data = 0;
+                    loc = block_end;
+                    o = 32;
                     do {
-                        tmp_dat = (((absQuant[loc     ] & mask) >> j) << (31-fp))
-                               |  (((absQuant[loc +  8] & mask) >> j) << (23-fp))
-                               |  (((absQuant[loc + 16] & mask) >> j) << (15-fp))
-                               |  (((absQuant[loc + 24] & mask) >> j) << ( 7-fp));
-                        
-                        loc ++;
-                        fp ++;
-                    } while (fp < 8);
-                    
-                    // store data
-					memcpy(&(cmpData[cmp_byte_ofs]), &tmp_dat, 4);
-                    cmp_byte_ofs += 4;
-                    
-                    mask <<= 1;
+                        data |= 
+                           (((absQuant[--loc] >> bit) & 1) << (--o))
+                         | (((absQuant[--loc] >> bit) & 1) << (--o))
+                         | (((absQuant[--loc] >> bit) & 1) << (--o))
+                         | (((absQuant[--loc] >> bit) & 1) << (--o));
+                    } while (o);
+                    memcpy(&cmpData[cmp_byte_ofs + (bit << 2)], &data,  4);
+
+                    #ifdef COMPRESS_DEBUG_PRINT
+                        if (chosen_block == curr_block) 
+                        {
+                            printf("%d-bits: ",bit);
+                            printbin(data);
+                            printf("\n");
+                        }
+                    #endif
                 }
+                cmp_byte_ofs += temp_fixed_rate << 2;
             }
-        
-            // Block initialization.
-            block_start += BLOCKSIZE; // the start of this block
-            block_end = (block_start+BLOCKSIZE) > chunk_end ? chunk_end : block_start+BLOCKSIZE; // the end of this block, corrected to not overflow out of bounds
-                
         }
-        
+     
+        // the last block
+        {
+            // Block initialization.
+            block_start = start + (block_num-1) * BLOCK_SIZE;
+            block_end = (block_start + BLOCK_SIZE > end) ? end : block_start + BLOCK_SIZE;
+            int curr_block = start_block + (block_num-1);
+            int temp_fixed_rate = fixedRate[curr_block];
+	
+            // directly store first floating point of block...
+            memcpy(&cmpData[cmp_byte_ofs], &absQuant[block_start], 4);
+            cmp_byte_ofs += 4;
+
+
+            // Operation for each block, if zero block then do nothing.
+            if(temp_fixed_rate)
+            {
+                
+                // Retrieve sign information for one block.
+                memcpy(&cmpData[cmp_byte_ofs], &signFlag[curr_block], 4);
+                cmp_byte_ofs += 4;
+
+                // Retrieve quant data for one block.
+
+                int data;
+                int loc;
+                int o;
+                for (int bit = temp_fixed_rate; bit --;) {
+                    data = 0;
+                    loc = block_end;
+                    o = block_end - block_start - 1;
+                    do {
+                        data |= 
+                           (((absQuant[--loc] >> bit) & 1) << (--o));
+                    } while (o);
+                    memcpy(&cmpData[cmp_byte_ofs + (bit << 2)], &data,  4);
+
+                    #ifdef COMPRESS_DEBUG_PRINT
+                        if (chosen_block == curr_block) 
+                        {
+                            printf("%d-bits: ",bit);
+                            printbin(data);
+                            printf("\n");
+                        }
+                    #endif
+                }
+                cmp_byte_ofs += temp_fixed_rate << 2;
+            }
+        }
+     
+
         // Return the compression data length.
         if(thread_id == NUM_THREADS - 1)
         {
@@ -176,7 +270,6 @@ void hawkZip_compress_kernel(
 
 void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQuant, int* fixedRate, unsigned int* threadOfs, size_t nbEle, float errorBound)
 {
-	//printf("ENTERED DECOMPRESS\n");
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
     omp_set_num_threads(NUM_THREADS);
@@ -189,13 +282,11 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
         int start = thread_id * chunk_size;
         int end = start + chunk_size;
         if(end > nbEle) end = nbEle;
-        int block_num = (chunk_size+BLOCKSIZE-1)/BLOCKSIZE;
+        int block_num = (chunk_size+BLOCK_SIZE-1)/BLOCK_SIZE;
         int block_start, block_end;
         int start_block = thread_id * block_num;
         unsigned int thread_ofs = 0;
 
-		
-		//printf("ENTERED_PARALLEL %d\n", thread_id);
 
         // Iterate all blocks in current thread.
         for(int i=0; i<block_num; i++)
@@ -206,109 +297,221 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             fixedRate[curr_block] = temp_fixed_rate;
 
             // Inner thread prefix-sum.
-            thread_ofs += 4 + (temp_fixed_rate ? (32+temp_fixed_rate*32)/8 : 0);
+            thread_ofs += 4 + (temp_fixed_rate ? (((1+temp_fixed_rate)*32) >> 3) : 0);
         }
-		
-		//printf("FINISHED_SIZING %d\n", thread_id);
 
         // Store thread ofs to global varaible, used for later global prefix-sum.
         threadOfs[thread_id] = thread_ofs;
         #pragma omp barrier
+
 
         // Exclusive prefix-sum.
         unsigned int global_ofs = 0;
         for(int i=0; i<thread_id; i++) global_ofs += threadOfs[i];
         unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS;
 
-		//printf("FINISHED_SUM %d\n", thread_id);
-		
         // Restore decompressed data.
-        for(int i=0; i<block_num; i++)
+        for(int i=0; i<block_num-1;i++)
         {
             // Block initialization.
-            block_start = start + i * BLOCKSIZE;
-            block_end = (block_start+BLOCKSIZE) > end ? end : block_start+BLOCKSIZE;
+            block_start = start + i * BLOCK_SIZE;
+            block_end = block_start+BLOCK_SIZE;
             int curr_block = start_block + i;
             int temp_fixed_rate = fixedRate[curr_block];
             unsigned int sign_flag = 0;
             int sign_ofs;
+
             
-			
-			//printf("START_WRITE %d\n", thread_id);
-			
-            // Retrieve first value from block
-			{
-				int write;
-				memcpy(&write, &(cmpData[cmp_byte_ofs]), 4);
-				decData[block_start] = (float)write * errorBound * 2;
-				cmp_byte_ofs += 4;	
-			}
+            
+            memcpy((char*)&absQuant[block_start], &cmpData[cmp_byte_ofs], 4);
+            cmp_byte_ofs += 4;
+            decData[block_start] = absQuant[block_start] * errorBound * 2;
+
+
+            #ifdef COMPRESS_DEBUG_PRINT
+                if (chosen_block == curr_block) 
+                {
+                    printf("First item: %f\n", *(float*)&decData[block_start]);
+                }
+            #endif
 
             // Operation for each block, if zero block then do nothing.
             if(temp_fixed_rate)
             {
-				
-				//printf("EXTRACT ALL BITS %d\n", thread_id);
-                // Retrieve sign information for one block.
-                //sign_flag = *(unsigned int*)(&(cmpData[cmp_byte_ofs]));
-                memcpy(&sign_flag, &(cmpData[cmp_byte_ofs]), 4);
+                memcpy((char*)&sign_flag, &cmpData[cmp_byte_ofs],4);
                 cmp_byte_ofs += 4;
-                
-				//printf("EXTRACTED SIGN BITS %d\n", thread_id);
 
-                // Retrieve quant data for one block.
-                //unsigned char tmp_char0, tmp_char1, tmp_char2, tmp_char3;
-                unsigned int tmp_dat;
+
+                #ifdef COMPRESS_DEBUG_PRINT
+                    if (chosen_block == curr_block) 
+                    {
+                        printf("Sign flag: ");
+                        printbin(sign_flag);
+                        printf("\n");
+                    }
+                #endif
                 
-                for(int j=0; j<temp_fixed_rate; j++)
-                {
-					
-					//printf("ABOUT TO GET DATA BITS %d\n", thread_id);
-                    // Initialization.
-                    //tmp_dat = *(unsigned int*)(&(cmpData[cmp_byte_ofs]));
-					memcpy(&tmp_dat, &(cmpData[cmp_byte_ofs]), 4);
-                    cmp_byte_ofs += 4;
-					
-					//printf("EXTRACTED DATA BITS %d\n", thread_id);
-					
-                    
-                    int loc = 1 + block_start;
-                    int fp = 0;
+                int bitset;
+                int o;
+                int loc;
+                for (int bit = temp_fixed_rate; bit --;) {
+                    memcpy(&bitset, &cmpData[cmp_byte_ofs + (bit << 2)], 4);
+                    o = 32;
+                    loc = block_end;
                     do {
-                        absQuant[loc    ] |= ((tmp_dat >> (7-fp))  & 1) << j;
-                        absQuant[loc + 8] |= ((tmp_dat >> (15-fp)) & 1) << j;
-                        absQuant[loc +16] |= ((tmp_dat >> (23-fp)) & 1) << j;
-						absQuant[loc +24] |= ((tmp_dat >> (31-fp)) & 1) << j;
-                        loc ++;
-                        fp ++;
-                    } while (fp < 8);
-					
-					//printf("EXTRACTED ALL DATA BITS %d\n", thread_id);
-                }
+                        absQuant[--loc] |= ((bitset >> (--o)) & 1) << bit;
+                        absQuant[--loc] |= ((bitset >> (--o)) & 1) << bit;
+                        absQuant[--loc] |= ((bitset >> (--o)) & 1) << bit;
+                        absQuant[--loc] |= ((bitset >> (--o)) & 1) << bit;
+                    } while (o);
+                 } 
+                 cmp_byte_ofs += 4 * temp_fixed_rate;
+                
 
-                // De-quantize and store data back to decompression data.
-                int currQuant;
-                for(int i=0; i<32; i++)
                 {
-                    if(sign_flag & (1 << (31 - i)))
-                        currQuant = absQuant[i + 1 + block_start] * -1;
-                    else
-                        currQuant = absQuant[i + 1 + block_start];
-                    decData[i + 1 + block_start] = (currQuant * errorBound * 2) + decData[i + block_start];
+                    // De-quantize and store data back to decompression data.
+                    int currQuant = 0;
+                    int prevQuant = absQuant[block_start];
+                    int o = 0;
+                    int loc = block_start+1;
+                    do
+                    {
+                        currQuant = absQuant[loc];
+                        if(currQuant & 1) {
+                             // if odd, then it was < 0 before...
+                             currQuant = -((1+currQuant) >> 1);
+                        }
+                        else {
+                             currQuant >>= 1;
+                        }
+                        currQuant += abs(prevQuant);
+
+                        if(sign_flag & (1 << o))
+                            currQuant = -currQuant;
+                        
+
+                        decData[loc] = currQuant * errorBound * 2;
+                        #ifdef COMPRESS_DEBUG_PRINT
+                            if (chosen_block == curr_block) 
+                            {
+                                printf("%d: Recovered value: %f, absQuant: %d, bin: ",o, decData[loc], currQuant);
+                                printbin(absQuant[loc]);
+                                printf("\n");
+                            }
+                        #endif 
+                        o++;
+                        loc++;
+                        prevQuant = currQuant;
+
+                    } while (o < 32);
                 }
             }
-            else 
-            {
-				//printf("COPY START VALUE %d\n", thread_id);
-                for(int i = 1 + block_start; i < block_end; i++) {
-                    decData[i] = decData[block_start];
+            else {
+                for (int j = block_start + 1; j < block_end; j++) {
+                    decData[j] = decData[block_start];
                 }
             }
-			//printf("FINISHED_WRITE %d %d\n", thread_id, i);
         }
-		
-		
-	}
-	
-	//printf("EXITED DECOMPRESS\n");
+        
+        // the last block
+        {
+            // Block initialization.
+            block_start = start + (block_num-1) * BLOCK_SIZE;
+            block_end = (block_start+BLOCK_SIZE) > end ? end : block_start+BLOCK_SIZE;
+            int curr_block = start_block + (block_num-1);
+            int temp_fixed_rate = fixedRate[curr_block];
+            unsigned int sign_flag = 0;
+            int sign_ofs;
+
+            
+            
+            memcpy((char*)&absQuant[block_start], &cmpData[cmp_byte_ofs], 4);
+            cmp_byte_ofs += 4;
+            decData[block_start] = absQuant[block_start] * errorBound * 2;
+
+
+            #ifdef COMPRESS_DEBUG_PRINT
+                if (chosen_block == curr_block) 
+                {
+                    printf("First item: %f\n", *(float*)&decData[block_start]);
+                }
+            #endif
+
+            // Operation for each block, if zero block then do nothing.
+            if(temp_fixed_rate)
+            {
+                memcpy((char*)&sign_flag, &cmpData[cmp_byte_ofs],4);
+                cmp_byte_ofs += 4;
+
+
+                #ifdef COMPRESS_DEBUG_PRINT
+                    if (chosen_block == curr_block) 
+                    {
+                        printf("Sign flag: ");
+                        printbin(sign_flag);
+                        printf("\n");
+                    }
+                #endif
+                
+                int bitset;
+                int o;
+                int loc;
+                for (int bit = temp_fixed_rate; bit --;) {
+                    memcpy(&bitset, &cmpData[cmp_byte_ofs + (bit << 2)], 4);
+                    o = block_end - block_start - 1;
+                    loc = block_end;
+                    do {
+                        absQuant[--loc] |= ((bitset >> (--o)) & 1) << bit;
+                    } while (o);
+                 } 
+                 cmp_byte_ofs += 4 * temp_fixed_rate;
+                
+
+                {
+                    // De-quantize and store data back to decompression data.
+                    int currQuant = 0;
+                    int prevQuant = absQuant[block_start];
+                    int o = 0;
+                    int loc = block_start+1;
+                    do
+                    {
+                        currQuant = absQuant[loc];
+                        if(currQuant & 1) {
+                             // if odd, then it was < 0 before...
+                             currQuant = -((1+currQuant) >> 1);
+                        }
+                        else {
+                             currQuant >>= 1;
+                        }
+                        currQuant += abs(prevQuant);
+
+                        if(sign_flag & (1 << o))
+                            currQuant = -currQuant;
+                        
+
+                        decData[loc] = currQuant * errorBound * 2;
+                        #ifdef COMPRESS_DEBUG_PRINT
+                            if (chosen_block == curr_block) 
+                            {
+                                printf("%d: Recovered value: %f, absQuant: %d, bin: ",o, decData[loc], currQuant);
+                                printbin(absQuant[loc]);
+                                printf("\n");
+                            }
+                        #endif 
+                        o++;
+                        loc++;
+                        prevQuant = currQuant;
+
+                    } while (o < block_end - block_start - 1);
+                }
+            }
+            else {
+                for (int j = block_start + 1; j < block_end; j++) {
+                    decData[j] = decData[block_start];
+                }
+            }
+        }
+
+
+    }
 }
