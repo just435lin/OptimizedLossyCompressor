@@ -6,7 +6,7 @@
 #include <omp.h>
 #include <time.h>
 
-#define NUM_THREADS 8
+#define NUM_THREADS 1
 
 int max(int a, int b) {
     return (a > b) ? a : b;
@@ -221,7 +221,8 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
     omp_set_num_threads(NUM_THREADS);
-    
+    double t_start,t_read_rates, t_sign_read, t_quant_read, t_total_start, t_end;
+    t_total_start = omp_get_wtime();
     // hawkZip parallel decompression begin.
     #pragma omp parallel
     {
@@ -234,29 +235,91 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
         int block_start, block_end;
         int start_block = thread_id * block_num;
         unsigned int thread_ofs = 0;
-
-
+        long paralell_iters, sequential_iters = 0;
+        t_start = omp_get_wtime();
+        int i  = start_block;
+        
         // Iterate all blocks in current thread.
-        for(int i=0; i<block_num; i++)
-        {
+
+        // for(; i<start + block_num && (i % 16 != 0) ; i++){
+        //     // Retrieve fixed-rate for each block in the compressed data.
+        //     int temp_fixed_rate = (int)cmpData[i];
+        //     fixedRate[i] = temp_fixed_rate;
+
+        //     // Inner thread prefix-sum.
+        //     thread_ofs += temp_fixed_rate ? (32+temp_fixed_rate*32)/8 : 0;
+        //     sequential_iters++;
+        // }
+
+        __m128i *vcmpData = (__m128i *) cmpData;
+
+        __m128i zero_vec = _mm_setzero_si128();
+        __m128i four = _mm_set1_epi16(4);
+
+        for (; i < block_num - 16; i += 16) {
+            // Load 16 bytes of compressed data
+            __m128i temp_fixed_rates = _mm_loadu_si128(&vcmpData[i / 16]);
+
+            // Step 1: Widen 8-bit integers to 16-bit integers
+            __m128i lower_16 = _mm_unpacklo_epi8(temp_fixed_rates, zero_vec);
+            __m128i upper_16 = _mm_unpackhi_epi8(temp_fixed_rates, zero_vec);
+
+            // Step 2: Widen 16-bit integers to 32-bit integers
+            __m128i lower_32_1 = _mm_unpacklo_epi16(lower_16, zero_vec);
+            __m128i lower_32_2 = _mm_unpackhi_epi16(lower_16, zero_vec);
+            __m128i upper_32_1 = _mm_unpacklo_epi16(upper_16, zero_vec);
+            __m128i upper_32_2 = _mm_unpackhi_epi16(upper_16, zero_vec);
+
+            // Store widened values into fixedRate
+            _mm_storeu_si128((__m128i *)(&(fixedRate[i])), lower_32_1);
+            _mm_storeu_si128((__m128i *)(&(fixedRate[i + 4])), lower_32_2);
+            _mm_storeu_si128((__m128i *)(&(fixedRate[i + 8])), upper_32_1);
+            _mm_storeu_si128((__m128i *)(&(fixedRate[i + 12])), upper_32_2);
+
+            // Compute activators for prefix-sum
+            __m128i activator = _mm_cmpeq_epi8(temp_fixed_rates, zero_vec);
+            __m128i uactivator = _mm_srli_epi16(_mm_unpacklo_epi8(activator, zero_vec), 7);
+            __m128i hactivator = _mm_srli_epi16(_mm_unpackhi_epi8(activator, zero_vec), 7);
+
+            __m128i uresult = _mm_mullo_epi16(
+                _mm_add_epi16(four, _mm_mullo_epi16(four, lower_16)),
+                uactivator);
+            __m128i hresult = _mm_mullo_epi16(
+                _mm_add_epi16(four, _mm_mullo_epi16(four, upper_16)),
+                hactivator);
+
+            // Sum the results
+            __m128i terms = _mm_add_epi16(uresult, hresult);
+            thread_ofs += _mm_extract_epi16(terms, 0) +
+                        _mm_extract_epi16(terms, 1) +
+                        _mm_extract_epi16(terms, 2) +
+                        _mm_extract_epi16(terms, 3);
+
+            paralell_iters++;
+        }
+        for(; i<start + block_num  ; i++){
             // Retrieve fixed-rate for each block in the compressed data.
-            int curr_block = start_block + i;
-            int temp_fixed_rate = (int)cmpData[curr_block];
-            fixedRate[curr_block] = temp_fixed_rate;
+            int temp_fixed_rate = (int)cmpData[i];
+            fixedRate[i] = temp_fixed_rate;
 
             // Inner thread prefix-sum.
             thread_ofs += temp_fixed_rate ? (32+temp_fixed_rate*32)/8 : 0;
+            sequential_iters++;
         }
+
+        printf("sequentially loaded elements: %ld, vectorized loaded elements:%ld\n", sequential_iters, paralell_iters*16);
+        
 
         // Store thread ofs to global varaible, used for later global prefix-sum.
         threadOfs[thread_id] = thread_ofs;
         #pragma omp barrier
-
+        t_read_rates = omp_get_wtime() - t_start;
         // Exclusive prefix-sum.
         unsigned int global_ofs = 0;
         for(int i=0; i<thread_id; i++) global_ofs += threadOfs[i];
         unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS;
 
+        t_start = omp_get_wtime();
         // Restore decompressed data.
         for(int i=0; i<block_num; i++)
         {
@@ -303,7 +366,8 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                     for(int k=block_start+24; k<block_end; k++)
                         absQuant[k] |= ((tmp_char3 >> (31+block_start-k)) & 0x00000001) << j;
                 }
-
+                t_quant_read = omp_get_wtime() - t_start;
+                t_start = omp_get_wtime();
                 // De-quantize and store data back to decompression data.
                 int currQuant;
                 for(int i=block_start; i<block_end; i++)
@@ -315,9 +379,19 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                         currQuant = absQuant[i];
                     decData[i] = currQuant * errorBound * 2;
                 }
+                t_sign_read = omp_get_wtime() - t_start;
             }
         }
     }
+    t_end = omp_get_wtime();
+    double total_time = (t_end - t_total_start) * 1000;
+    double quantize_time = ( (t_quant_read)) * 1000;
+    double rates_time = ((t_read_rates)) * 1000;
+    double sign_time = ((t_sign_read)) * 1000;
+    
+
+    printf("rates time=%fms, quantize time=%fms, sign time=%fms, ratio = %.2f:%.2f:%.2f, total=%fms\n", 
+        rates_time, quantize_time, sign_time, rates_time/total_time, quantize_time/total_time, sign_time/total_time, total_time);
 }
 
 
