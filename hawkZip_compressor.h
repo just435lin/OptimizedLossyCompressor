@@ -1,8 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <emmintrin.h>
+#include <tmmintrin.h>
+#include <immintrin.h> 
 #include <omp.h>
+#include <time.h>
 
 #define NUM_THREADS 1
 #define BLOCK_SIZE 33
@@ -128,20 +130,6 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             // Inner thread prefix-sum.
             thread_ofs += ((1+temp_fixed_rate+!all_signs)<<2);
 
-            #ifdef COMPRESS_DEBUG_PRINT
-                if (chosen_block ==curr_block) {
-                    printf("max_quant: %d bitwise: ", max_quant);
-                    printbin(max_quant);
-                    printf("\n");
-
-                    printf("signs: ");
-                    printbin(sign_flag);
-                    printf("\n");
-
-                    printf("bytes needed: %d\n", ((1+temp_fixed_rate+!all_signs)<<2));
-                }
-            #endif
-
             temp_fixed_rate |= (all_signs << 5) | ((all_signs & sign_flag) << 6);
             fixedRate[curr_block] = temp_fixed_rate;
             cmpData[curr_block] = (unsigned char)temp_fixed_rate;
@@ -157,7 +145,8 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
         unsigned int global_ofs = 0;
         for(int i=thread_id; i--;) global_ofs += threadOfs[i];
         unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS;
-
+        __m128i absQuantVec;
+        __m128i mask = _mm_set1_epi32(0x00000001);
 
         // Fixed-length encoding and store data to compressed data.
         for(int i= 0; i< block_num-1; i++)
@@ -188,28 +177,42 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
 
                 int data;
                 int loc;
-                int o;
                 for (int bit = temp_fixed_rate; bit --;) {
                     data = 0;
                     loc = block_end;
-                    o = 32;
-                    do {
-                        data |= 
-                           (((absQuant[--loc] >> bit) & 1) << (--o))
-                         | (((absQuant[--loc] >> bit) & 1) << (--o))
-                         | (((absQuant[--loc] >> bit) & 1) << (--o))
-                         | (((absQuant[--loc] >> bit) & 1) << (--o));
-                    } while (o);
+                    for(int i = 0; i <2; i++){
+                    __m128i absQuantVec0 = _mm_loadu_si128((__m128i *)&absQuant[loc-4]);
+                    __m128i absQuantVec1 = _mm_loadu_si128((__m128i *)&absQuant[loc-8]);
+                    __m128i absQuantVec2 = _mm_loadu_si128((__m128i *)&absQuant[loc-12]);
+                    __m128i absQuantVec3 = _mm_loadu_si128((__m128i *)&absQuant[loc-16]);
+                    loc -= 16;
+
+                    absQuantVec0 = _mm_and_si128(_mm_srli_epi32(absQuantVec0, bit), mask);  
+                    absQuantVec1 = _mm_and_si128(_mm_srli_epi32(absQuantVec1, bit), mask);
+                    absQuantVec2 = _mm_and_si128(_mm_srli_epi32(absQuantVec2, bit), mask);
+                    absQuantVec3 = _mm_and_si128(_mm_srli_epi32(absQuantVec3, bit), mask);
+                    
+
+                    data |=   _mm_extract_epi32(absQuantVec0, 3) << (31 - 16 * i)
+                            | _mm_extract_epi32(absQuantVec0, 2) << (30 - 16 * i)
+                            | _mm_extract_epi32(absQuantVec0, 1) << (29 - 16 * i)
+                            | _mm_extract_epi32(absQuantVec0, 0) << (28 - 16 * i) 
+                            | _mm_extract_epi32(absQuantVec1, 3) << (27 - 16 * i)
+                            | _mm_extract_epi32(absQuantVec1, 2) << (26 - 16 * i)
+                            | _mm_extract_epi32(absQuantVec1, 1) << (25 - 16 * i)
+                            | _mm_extract_epi32(absQuantVec1, 0) << (24 - 16 * i) 
+                            | _mm_extract_epi32(absQuantVec2, 3) << (23 - 16 * i)
+                            | _mm_extract_epi32(absQuantVec2, 2) << (22 - 16 * i)
+                            | _mm_extract_epi32(absQuantVec2, 1) << (21 - 16 * i)
+                            | _mm_extract_epi32(absQuantVec2, 0) << (20 - 16 * i) 
+                            | _mm_extract_epi32(absQuantVec3, 3) << (19 - 16 * i)
+                            | _mm_extract_epi32(absQuantVec3, 2) << (18 - 16 * i)
+                            | _mm_extract_epi32(absQuantVec3, 1) << (17 - 16 * i)
+                            | _mm_extract_epi32(absQuantVec3, 0) << (16 - 16 * i);
+                    }
                     memcpy(&cmpData[cmp_byte_ofs + (bit << 2)], &data,  4);
 
-                    #ifdef COMPRESS_DEBUG_PRINT
-                        if (chosen_block == curr_block) 
-                        {
-                            printf("%d-bits: ",bit);
-                            printbin(data);
-                            printf("\n");
-                        }
-                    #endif
+                  
                 }
                 cmp_byte_ofs += temp_fixed_rate << 2;
             }
@@ -254,15 +257,6 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                            (((absQuant[--loc] >> bit) & 1) << (--o));
                     } while (o);
                     memcpy(&cmpData[cmp_byte_ofs + (bit << 2)], &data,  4);
-
-                    #ifdef COMPRESS_DEBUG_PRINT
-                        if (chosen_block == curr_block) 
-                        {
-                            printf("%d-bits: ",bit);
-                            printbin(data);
-                            printf("\n");
-                        }
-                    #endif
                 }
                 cmp_byte_ofs += temp_fixed_rate << 2;
             }
