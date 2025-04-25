@@ -6,7 +6,7 @@
 #include <omp.h>
 #include <time.h>
 
-#define NUM_THREADS 1
+#define NUM_THREADS 2
 
 int max(int a, int b) {
     return (a > b) ? a : b;
@@ -134,25 +134,25 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                 cmpData[cmp_byte_ofs++] = 0xff & (sign_flag >> 8);
                 cmpData[cmp_byte_ofs++] = 0xff & sign_flag;
                 __m128i mask = _mm_set1_epi32(1);
-
+                __m128i block= _mm_loadu_si128((__m128i *)&absQuant[block_start]);
+                __m128i block1= _mm_loadu_si128((__m128i *)&absQuant[block_start + 4]);  
+                __m128i block2= _mm_loadu_si128((__m128i *)&absQuant[block_start + 8]);
+                __m128i block3= _mm_loadu_si128((__m128i *)&absQuant[block_start + 12]);  
+                __m128i block4= _mm_loadu_si128((__m128i *)&absQuant[block_start + 16]);
+                __m128i block5= _mm_loadu_si128((__m128i *)&absQuant[block_start + 20]);  
+                __m128i block6= _mm_loadu_si128((__m128i *)&absQuant[block_start + 24]);
+                __m128i block7= _mm_loadu_si128((__m128i *)&absQuant[block_start + 28]); 
                 //TODO potentially invert these two loops so that the acess pattern (of absQuat) is more predictable
                 for(int j=0; j<temp_fixed_rate; j++){
                     
-                    __m128i block= _mm_loadu_si128((__m128i *)&absQuant[block_start]);
+                     
                     __m128i result = _mm_srli_epi32( _mm_and_si128(block, mask), j);
-                    __m128i block1= _mm_loadu_si128((__m128i *)&absQuant[block_start + 4]);  
                     __m128i result1 = _mm_srli_epi32( _mm_and_si128(block1, mask), j);
-                    __m128i block2= _mm_loadu_si128((__m128i *)&absQuant[block_start + 8]);
                     __m128i result2 = _mm_srli_epi32( _mm_and_si128(block2, mask), j);
-                    __m128i block3= _mm_loadu_si128((__m128i *)&absQuant[block_start + 12]);  
                     __m128i result3 = _mm_srli_epi32( _mm_and_si128(block3, mask), j);
-                    __m128i block4= _mm_loadu_si128((__m128i *)&absQuant[block_start + 16]);
                     __m128i result4 = _mm_srli_epi32( _mm_and_si128(block4, mask), j);
-                    __m128i block5= _mm_loadu_si128((__m128i *)&absQuant[block_start + 20]);  
                     __m128i result5 = _mm_srli_epi32( _mm_and_si128(block5, mask), j);
-                    __m128i block6= _mm_loadu_si128((__m128i *)&absQuant[block_start + 24]);
                     __m128i result6 = _mm_srli_epi32( _mm_and_si128(block6, mask), j);
-                    __m128i block7= _mm_loadu_si128((__m128i *)&absQuant[block_start + 28]);  
                     __m128i result7 = _mm_srli_epi32( _mm_and_si128(block7, mask), j);
 
 
@@ -212,8 +212,8 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
     double prefix_time = ((t_prefix)) * 1000;
     
 
-    printf("quantize_time=%fms, prefix time=%fms, encoding time=%fms, ratio = %.2f:%.2f:%.2f, total=%fms\n", 
-        quantize_time, prefix_time, encoding_time, quantize_time/total_time, prefix_time/total_time, encoding_time/total_time, total_time);
+    //printf("quantize_time=%fms, prefix time=%fms, encoding time=%fms, ratio = %.2f:%.2f:%.2f, total=%fms\n", 
+    //    quantize_time, prefix_time, encoding_time, quantize_time/total_time, prefix_time/total_time, encoding_time/total_time, total_time);
 }
 
 void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQuant, int* fixedRate, unsigned int* threadOfs, size_t nbEle, float errorBound)
@@ -239,77 +239,82 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
         if(omp_get_thread_num() == 0){
             t_start = omp_get_wtime();
         }
-        int i  = start_block;
+        int i  = 0;
         
-        // Iterate all blocks in current thread.
-
-        // for(; i<start + block_num && (i % 16 != 0) ; i++){
+        // for(; (i< block_num) && (i %16 != 0) ; i++){
+        //     int curr_block = start_block + i;
         //     // Retrieve fixed-rate for each block in the compressed data.
-        //     int temp_fixed_rate = (int)cmpData[i];
-        //     fixedRate[i] = temp_fixed_rate;
+        //     int temp_fixed_rate = (int)cmpData[curr_block];
+        //     fixedRate[curr_block] = temp_fixed_rate;
 
         //     // Inner thread prefix-sum.
         //     thread_ofs += temp_fixed_rate ? (32+temp_fixed_rate*32)/8 : 0;
         //     sequential_iters++;
+        //     printf("running");
         // }
+        // Iterate all blocks in current thread.
 
-        __m128i *vcmpData = (__m128i *) cmpData;
+        
 
-        __m128i zero_vec = _mm_setzero_si128();
-        __m128i four = _mm_set1_epi16(4);
+        // __m128i *vcmpData = (__m128i *) cmpData;
 
-        for (; i < block_num - 16; i += 16) {
-            // Load 16 bytes of compressed data
-            __m128i temp_fixed_rates = _mm_loadu_si128(&vcmpData[i / 16]);
+        // __m128i zero_vec = _mm_setzero_si128();
+        // __m128i four = _mm_set1_epi16(4);
 
-            // Step 1: Widen 8-bit integers to 16-bit integers
-            __m128i lower_16 = _mm_unpacklo_epi8(temp_fixed_rates, zero_vec);
-            __m128i upper_16 = _mm_unpackhi_epi8(temp_fixed_rates, zero_vec);
+        // for (; i <  block_num - 16; i += 16) {
+        //     int curr_block = start_block + i;
+        //     // Load 16 bytes of compressed data
+        //     __m128i temp_fixed_rates = _mm_loadu_si128(&vcmpData[curr_block / 16]);
 
-            // Step 2: Widen 16-bit integers to 32-bit integers
-            __m128i lower_32_1 = _mm_unpacklo_epi16(lower_16, zero_vec);
-            __m128i lower_32_2 = _mm_unpackhi_epi16(lower_16, zero_vec);
-            __m128i upper_32_1 = _mm_unpacklo_epi16(upper_16, zero_vec);
-            __m128i upper_32_2 = _mm_unpackhi_epi16(upper_16, zero_vec);
+        //     // Step 1: Widen 8-bit integers to 16-bit integers
+        //     __m128i lower_16 = _mm_unpacklo_epi8(temp_fixed_rates, zero_vec);
+        //     __m128i upper_16 = _mm_unpackhi_epi8(temp_fixed_rates, zero_vec);
 
-            // Store widened values into fixedRate
-            _mm_storeu_si128((__m128i *)(&(fixedRate[i])), lower_32_1);
-            _mm_storeu_si128((__m128i *)(&(fixedRate[i + 4])), lower_32_2);
-            _mm_storeu_si128((__m128i *)(&(fixedRate[i + 8])), upper_32_1);
-            _mm_storeu_si128((__m128i *)(&(fixedRate[i + 12])), upper_32_2);
+        //     // Step 2: Widen 16-bit integers to 32-bit integers
+        //     __m128i lower_32_1 = _mm_unpacklo_epi16(lower_16, zero_vec);
+        //     __m128i lower_32_2 = _mm_unpackhi_epi16(lower_16, zero_vec);
+        //     __m128i upper_32_1 = _mm_unpacklo_epi16(upper_16, zero_vec);
+        //     __m128i upper_32_2 = _mm_unpackhi_epi16(upper_16, zero_vec);
 
-            // Compute activators for prefix-sum
-            __m128i activator = _mm_cmpeq_epi8(temp_fixed_rates, zero_vec);
-            __m128i uactivator = _mm_srli_epi16(_mm_unpacklo_epi8(activator, zero_vec), 7);
-            __m128i hactivator = _mm_srli_epi16(_mm_unpackhi_epi8(activator, zero_vec), 7);
+        //     // Store widened values into fixedRate
+        //     _mm_storeu_si128((__m128i *)(&(fixedRate[curr_block])), lower_32_1);
+        //     _mm_storeu_si128((__m128i *)(&(fixedRate[curr_block + 4])), lower_32_2);
+        //     _mm_storeu_si128((__m128i *)(&(fixedRate[curr_block + 8])), upper_32_1);
+        //     _mm_storeu_si128((__m128i *)(&(fixedRate[curr_block + 12])), upper_32_2);
 
-            __m128i uresult = _mm_mullo_epi16(
-                _mm_add_epi16(four, _mm_mullo_epi16(four, lower_16)),
-                uactivator);
-            __m128i hresult = _mm_mullo_epi16(
-                _mm_add_epi16(four, _mm_mullo_epi16(four, upper_16)),
-                hactivator);
+        //     // Compute activators for prefix-sum
+        //     __m128i activator = _mm_cmpeq_epi8(temp_fixed_rates, zero_vec);
+        //     __m128i uactivator = _mm_srli_epi16(_mm_unpacklo_epi8(activator, zero_vec), 7);
+        //     __m128i hactivator = _mm_srli_epi16(_mm_unpackhi_epi8(activator, zero_vec), 7);
 
-            // Sum the results
-            __m128i terms = _mm_add_epi16(uresult, hresult);
-            thread_ofs += _mm_extract_epi16(terms, 0) +
-                        _mm_extract_epi16(terms, 1) +
-                        _mm_extract_epi16(terms, 2) +
-                        _mm_extract_epi16(terms, 3);
+        //     __m128i uresult = _mm_mullo_epi16(
+        //         _mm_add_epi16(four, _mm_mullo_epi16(four, lower_16)),
+        //         uactivator);
+        //     __m128i hresult = _mm_mullo_epi16(
+        //         _mm_add_epi16(four, _mm_mullo_epi16(four, upper_16)),
+        //         hactivator);
 
-            paralell_iters++;
-        }
-        for(; i<start + block_num  ; i++){
+        //     // Sum the results
+        //     __m128i terms = _mm_add_epi16(uresult, hresult);
+        //     thread_ofs += _mm_extract_epi16(terms, 0) +
+        //                 _mm_extract_epi16(terms, 1) +
+        //                 _mm_extract_epi16(terms, 2) +
+        //                 _mm_extract_epi16(terms, 3);
+
+        //     paralell_iters++;
+        // }
+        for(; i< block_num  ; i++){
+            int curr_block = start_block + i;
             // Retrieve fixed-rate for each block in the compressed data.
-            int temp_fixed_rate = (int)cmpData[i];
-            fixedRate[i] = temp_fixed_rate;
+            int temp_fixed_rate = (int)cmpData[curr_block];
+            fixedRate[curr_block] = temp_fixed_rate;
 
             // Inner thread prefix-sum.
             thread_ofs += temp_fixed_rate ? (32+temp_fixed_rate*32)/8 : 0;
             sequential_iters++;
         }
 
-        printf("sequentially loaded elements: %ld, vectorized loaded elements:%ld total elements =%ld\n", sequential_iters, paralell_iters*16, nbEle);
+        //printf("sequentially loaded elements: %ld, vectorized loaded elements:%ld total elements =%ld\n", sequential_iters, paralell_iters*16, nbEle);
         
 
         // Store thread ofs to global varaible, used for later global prefix-sum.
@@ -346,36 +351,83 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                             (0x000000ff & cmpData[cmp_byte_ofs++]);
 
                 // Retrieve quant data for one block.
-                unsigned char tmp_char0, tmp_char1, tmp_char2, tmp_char3;
+                int tmp_char;
+                __m128i temp;
+                __m128i absQuant00 = _mm_set1_epi32(0);
+                __m128i absQuant01 = _mm_set1_epi32(0);
+                __m128i absQuant10 = _mm_set1_epi32(0);
+                __m128i absQuant11 = _mm_set1_epi32(0);
+                __m128i absQuant20 = _mm_set1_epi32(0);
+                __m128i absQuant21 = _mm_set1_epi32(0);
+                __m128i absQuant30 = _mm_set1_epi32(0);
+                __m128i absQuant31 = _mm_set1_epi32(0);
+                       
+                
+                __m128i mask = _mm_set1_epi32(0x00000001);
                 for(int j=0; j<temp_fixed_rate; j++)
                 {
                     // Initialization.
-                    tmp_char0 = cmpData[cmp_byte_ofs++];
-                    tmp_char1 = cmpData[cmp_byte_ofs++];
-                    tmp_char2 = cmpData[cmp_byte_ofs++];
-                    tmp_char3 = cmpData[cmp_byte_ofs++];
 
-                    // Get ith bit in 0~7 abs quant from global memory.
-                    for(int k=block_start; k<block_start+8; k++){
-                        absQuant[k] |= ((tmp_char0 >> (7+block_start-k)) & 0x00000001) << j;
-
+                    tmp_char = (int)cmpData[cmp_byte_ofs++];
                     
+                    absQuant00 = _mm_or_si128(absQuant00, _mm_slli_epi32(
+                                        _mm_and_si128( 
+                                            _mm_set_epi32(tmp_char >> 4, tmp_char >> 5, tmp_char >> 6, tmp_char >> 7),
+                                            mask),
+                                        j));
+                    absQuant01 = _mm_or_si128(absQuant01, _mm_slli_epi32(
+                                        _mm_and_si128( 
+                                            _mm_set_epi32(tmp_char >> 0, tmp_char >> 1, tmp_char >> 2, tmp_char >> 3),
+                                            mask),
+                                        j));
                     
-                        absQuant[k+8] |= ((tmp_char1 >> (15+block_start-(k+8))) & 0x00000001) << j;
-
-                   
+                    tmp_char = (int)cmpData[cmp_byte_ofs++];
                     
-                        absQuant[k+16] |= ((tmp_char2 >> (23+block_start-(k+16))) & 0x00000001) << j;
-
+                    absQuant10 = _mm_or_si128(absQuant10, _mm_slli_epi32(
+                                                _mm_and_si128( 
+                                                    _mm_set_epi32(tmp_char >> 4, tmp_char >> 5, tmp_char >> 6, tmp_char >> 7),
+                                                    mask),
+                                                j));
+                    absQuant11 = _mm_or_si128(absQuant11, _mm_slli_epi32(
+                                                        _mm_and_si128( 
+                                                            _mm_set_epi32(tmp_char >> 0, tmp_char >> 1, tmp_char >> 2, tmp_char >> 3),
+                                                            mask),
+                                                        j));
                     
-                   
-                        absQuant[k+24] |= ((tmp_char3 >> (31+block_start-(k+24))) & 0x00000001) << j;
-                    }
+                    tmp_char = (int)cmpData[cmp_byte_ofs++];
+                    
+                    absQuant20 = _mm_or_si128(absQuant20, _mm_slli_epi32(
+                                            _mm_and_si128( 
+                                                _mm_set_epi32(tmp_char >> 4, tmp_char >> 5, tmp_char >> 6, tmp_char >> 7),
+                                                mask),
+                                            j));
+                    absQuant21 = _mm_or_si128(absQuant21, _mm_slli_epi32(
+                                                _mm_and_si128( 
+                                                    _mm_set_epi32(tmp_char >> 0, tmp_char >> 1, tmp_char >> 2, tmp_char >> 3),
+                                                    mask),
+                                                j));
+                    
+                    tmp_char = (int)cmpData[cmp_byte_ofs++];
+                    
+                    absQuant30 = _mm_or_si128(absQuant30, _mm_slli_epi32(
+                                            _mm_and_si128( 
+                                                _mm_set_epi32(tmp_char >> 4, tmp_char >> 5, tmp_char >> 6, tmp_char >> 7),
+                                                mask),
+                                            j));
+                    absQuant31 = _mm_or_si128(absQuant31, _mm_slli_epi32(
+                                                _mm_and_si128( 
+                                                    _mm_set_epi32(tmp_char >> 0, tmp_char >> 1, tmp_char >> 2, tmp_char >> 3),
+                                                    mask),
+                                                j));
                 }
-                if(omp_get_thread_num() == 0){
-                    t_quant_read = omp_get_wtime() - t_start;
-                    t_start = omp_get_wtime();
-                }
+                _mm_storeu_si128((__m128i *)&absQuant[block_start], absQuant00);
+                _mm_storeu_si128((__m128i *)&absQuant[block_start + 4], absQuant01);
+                _mm_storeu_si128((__m128i *)&absQuant[block_start + 8], absQuant10);
+                _mm_storeu_si128((__m128i *)&absQuant[block_start + 12], absQuant11);
+                _mm_storeu_si128((__m128i *)&absQuant[block_start + 16], absQuant20);
+                _mm_storeu_si128((__m128i *)&absQuant[block_start + 20], absQuant21);
+                _mm_storeu_si128((__m128i *)&absQuant[block_start + 24], absQuant30);
+                _mm_storeu_si128((__m128i *)&absQuant[block_start + 28], absQuant31);
                 
                 // De-quantize and store data back to decompression data.
                 int currQuant;
@@ -388,11 +440,12 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                         currQuant = absQuant[i];
                     decData[i] = currQuant * errorBound * 2;
                 }
-                if(omp_get_thread_num() == 0){
-                    t_sign_read = omp_get_wtime() - t_start;
-                    t_end = omp_get_wtime();
-                }
+                
             }
+        }
+        if(omp_get_thread_num() == 0){
+            t_quant_read = omp_get_wtime() - t_start;
+            t_start = omp_get_wtime();
         }
     }
     
@@ -402,8 +455,8 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
     double sign_time = ((t_sign_read)) * 1000;
     
 
-    printf("rates time=%fms, quantize time=%fms, sign time=%fms, ratio = %.2f:%.2f:%.2f, total=%fms\n", 
-        rates_time, quantize_time, sign_time, rates_time/total_time, quantize_time/total_time, sign_time/total_time, total_time);
+    //printf("rates time=%fms, quantize time=%fms, sign time=%fms, ratio = %.2f:%.2f:%.2f, total=%fms\n", 
+    //    rates_time, quantize_time, sign_time, rates_time/total_time, quantize_time/total_time, sign_time/total_time, total_time);
 }
 
 
