@@ -20,6 +20,9 @@ void printbin(int val) {
   }
 }
 #endif
+int max(int a, int b) {
+    return (a > b) ? a : b;
+}
 
 void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQuant, unsigned int* signFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
 {
@@ -106,7 +109,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                 int store = (dif<0) ? (abs(dif)<< 1)-1 : (dif << 1);
 
                 // Get absolute quantization code.
-                max_quant |= store;
+                max_quant = max(store, max_quant);
                 absQuant[loc] = store;
 
 
