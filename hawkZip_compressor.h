@@ -91,26 +91,25 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             #endif
             
             // Prequantization, get absolute value for each data.
-            for(int j=0; j < 32 && j + block_start + 1 < block_end; j ++)
+            for(int j= block_start + 1; j  < block_end; j ++)
             {
                 prev_quant = curr_quant;
-                int loc = j + block_start + 1;
+                
 
                 // Prequantization.
-                data_recip = (oriData[loc]) * recip_precision;
+                data_recip = (oriData[j]) * recip_precision;
                 curr_quant = data_recip < 0.0f ? (int)(data_recip - 0.5f) : (int)(data_recip + 0.5f);
                 
 
                 // Get sign data.
-                sign_flag |= (curr_quant < 0) << j;
+                sign_flag |= (curr_quant < 0) << (j - (block_start + 1));
 
 
                 int dif = abs(curr_quant) - abs(prev_quant);
-                int store = (dif<0) ? (abs(dif)<< 1)-1 : (dif << 1);
-
+                int store = (dif << 1) ^ (dif >> 31);
                 // Get absolute quantization code.
                 max_quant |= store;
-                absQuant[loc] = store;
+                absQuant[j] = store;
 
 
                 #ifdef COMPRESS_DEBUG_PRINT
