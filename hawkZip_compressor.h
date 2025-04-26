@@ -6,40 +6,18 @@
 #include <omp.h>
 #include <time.h>
 
-#define NUM_THREADS 1
+#define NUM_THREADS 16
 #define BLOCK_SIZE 33
 
-//#define COMPRESS_DEBUG_PRINT
-
-#ifdef COMPRESS_DEBUG_PRINT
-int chosen_block;
-
-void printbin(int val) {
-  for (int i = 0; i < 32; i ++) {
-    printf("%d ", (val >> (31 - i)) & 1);
-  }
-}
-#endif
-int max(int a, int b) {
-    return (a > b) ? a : b;
-}
 
 void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQuant, unsigned int* signFlag, int* fixedRate, unsigned int* threadOfs, size_t nbEle, size_t* cmpSize, float errorBound)
 {
-    #ifdef COMPRESS_DEBUG_PRINT
-    	printf("ENTER COMPRESS\n");
-    #endif
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
     omp_set_num_threads(NUM_THREADS);
     int block_num = (chunk_size+BLOCK_SIZE-1)/BLOCK_SIZE;
     
-    #ifdef COMPRESS_DEBUG_PRINT
-        srand(getpid());
-        chosen_block = rand() % block_num;
-        printf("INSPECTING BLOCK %d\n", chosen_block);
-    #endif
-   
+    
     // hawkZip parallel compression begin.
     #pragma omp parallel
     {
@@ -52,13 +30,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
         int block_start, block_end;
         const float recip_precision = 0.5f/errorBound;
         int sign_ofs;
-        unsigned int thread_ofs = 0; 
-
-        #ifdef COMPRESS_DEBUG_PRINT
-            if (thread_id == 0)
-                printf("ERROR BOUND: %f\n", errorBound);
-        #endif
-
+        unsigned int thread_ofs = 0;
 
         // Iterate all blocks in current thread.
         for(int i=0; i<block_num; i++)
@@ -80,42 +52,23 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             curr_quant = data_recip < 0.0f ? (int)(data_recip - 0.5f) : (int)(data_recip + 0.5f);
             absQuant[block_start] = curr_quant;
             
-            
-            #ifdef COMPRESS_DEBUG_PRINT
-                if (chosen_block == curr_block)
-                {
-                    printf("first: %f quant: ", oriData[block_start]);
-                    printbin(curr_quant);
-                    printf("\n");
-                }
-            #endif
-            
             // Prequantization, get absolute value for each data.
             for(int j= block_start + 1; j  < block_end; j ++)
             {
                 prev_quant = curr_quant;
-                
 
                 // Prequantization.
                 data_recip = (oriData[j]) * recip_precision;
                 curr_quant = data_recip < 0.0f ? (int)(data_recip - 0.5f) : (int)(data_recip + 0.5f);
+
                 // Get sign data.
                 sign_flag |= (curr_quant < 0) << (j - (block_start + 1));
                 int dif = abs(curr_quant) - abs(prev_quant);
                 int store = (dif << 1) ^ (dif >> 31);
+
                 // Get absolute quantization code.
                 max_quant |= store;
                 absQuant[j] = store;
-
-
-                #ifdef COMPRESS_DEBUG_PRINT
-                    if (chosen_block == curr_block)
-                    {
-                        printf("%d: orig: %f, absquant: %d, quant: ", j, oriData[loc], absQuant[loc]);
-                        printbin(store);
-                        printf("\n");
-                    }
-                #endif
             }
 
             char all_signs = (sign_flag == 0 || sign_flag == 0xFFFFFFFF) & 1;            
@@ -123,7 +76,6 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
             // Record fixed-length encoding rate for each block.
             signFlag[curr_block] = sign_flag;
             temp_fixed_rate = max_quant==0 ? 0 : (32 - __builtin_clz(max_quant));
-
             
             // Inner thread prefix-sum.
             thread_ofs += ((1+temp_fixed_rate+!all_signs)<<2);
@@ -143,7 +95,6 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
         unsigned int global_ofs = 0;
         for(int i=thread_id; i--;) global_ofs += threadOfs[i];
         unsigned int cmp_byte_ofs = global_ofs + block_num * NUM_THREADS;
-        __m128i absQuantVec;
         __m128i mask = _mm_set1_epi32(0x00000001);
 
         // Fixed-length encoding and store data to compressed data.
@@ -190,22 +141,22 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                     absQuantVec2 = _mm_and_si128(_mm_srli_epi32(absQuantVec2, bit), mask);
                     absQuantVec3 = _mm_and_si128(_mm_srli_epi32(absQuantVec3, bit), mask);
                     data |=   _mm_extract_epi32(absQuantVec0, 3) << (31 - 16 * i)
-                    | _mm_extract_epi32(absQuantVec0, 2) << (30 - 16 * i)
-                    | _mm_extract_epi32(absQuantVec0, 1) << (29 - 16 * i)
-                    | _mm_extract_epi32(absQuantVec0, 0) << (28 - 16 * i) 
-                    | _mm_extract_epi32(absQuantVec1, 3) << (27 - 16 * i)
-                    | _mm_extract_epi32(absQuantVec1, 2) << (26 - 16 * i)
-                    | _mm_extract_epi32(absQuantVec1, 1) << (25 - 16 * i)
-                    | _mm_extract_epi32(absQuantVec1, 0) << (24 - 16 * i) 
-                    | _mm_extract_epi32(absQuantVec2, 3) << (23 - 16 * i)
-                    | _mm_extract_epi32(absQuantVec2, 2) << (22 - 16 * i)
-                    | _mm_extract_epi32(absQuantVec2, 1) << (21 - 16 * i)
-                    | _mm_extract_epi32(absQuantVec2, 0) << (20 - 16 * i) 
-                    | _mm_extract_epi32(absQuantVec3, 3) << (19 - 16 * i)
-                    | _mm_extract_epi32(absQuantVec3, 2) << (18 - 16 * i)
-                    | _mm_extract_epi32(absQuantVec3, 1) << (17 - 16 * i)
-                    | _mm_extract_epi32(absQuantVec3, 0) << (16 - 16 * i);
-                    }
+                         |    _mm_extract_epi32(absQuantVec0, 2) << (30 - 16 * i)
+                         |    _mm_extract_epi32(absQuantVec0, 1) << (29 - 16 * i)
+                         |    _mm_extract_epi32(absQuantVec0, 0) << (28 - 16 * i) 
+                         |    _mm_extract_epi32(absQuantVec1, 3) << (27 - 16 * i)
+                         |    _mm_extract_epi32(absQuantVec1, 2) << (26 - 16 * i)
+                         |    _mm_extract_epi32(absQuantVec1, 1) << (25 - 16 * i)
+                         |    _mm_extract_epi32(absQuantVec1, 0) << (24 - 16 * i) 
+                         |    _mm_extract_epi32(absQuantVec2, 3) << (23 - 16 * i)
+                         |    _mm_extract_epi32(absQuantVec2, 2) << (22 - 16 * i)
+                         |    _mm_extract_epi32(absQuantVec2, 1) << (21 - 16 * i)
+                         |    _mm_extract_epi32(absQuantVec2, 0) << (20 - 16 * i) 
+                         |    _mm_extract_epi32(absQuantVec3, 3) << (19 - 16 * i)
+                         |    _mm_extract_epi32(absQuantVec3, 2) << (18 - 16 * i)
+                         |    _mm_extract_epi32(absQuantVec3, 1) << (17 - 16 * i)
+                         |    _mm_extract_epi32(absQuantVec3, 0) << (16 - 16 * i);
+                    } 
                     memcpy(&cmpData[cmp_byte_ofs + (bit << 2)], &data,  4);
 
                   
@@ -271,11 +222,6 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
 
 void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQuant, int* fixedRate, unsigned int* threadOfs, size_t nbEle, float errorBound)
 {
-
-    #ifdef COMPRESS_DEBUG_PRINT
-        printf("ENTER_DECOMPRESS\n");
-    #endif
-
     // Shared variables across threads.
     int chunk_size = (nbEle + NUM_THREADS - 1) / NUM_THREADS;
     omp_set_num_threads(NUM_THREADS);
@@ -293,11 +239,6 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
         int start_block = thread_id * block_num;
         unsigned int thread_ofs = 0;
 
-        
-    #ifdef COMPRESS_DEBUG_PRINT
-        printf("ENTER_PARALLEL\n");
-    #endif
-
         // Iterate all blocks in current thread.
         for(int i=0; i<block_num; i++)
         {
@@ -311,24 +252,11 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             // Inner thread prefix-sum.
             thread_ofs += (1 + temp_fixed_rate+!all_signs)<<2;
 
-            #ifdef COMPRESS_DEBUG_PRINT
-                if (chosen_block == curr_block) 
-                {
-                    printf("Recovered needed bytes: %d\n", (1 + temp_fixed_rate+!all_signs)<<2);
-                }
-            #endif
-
         }
-
-        
-    #ifdef COMPRESS_DEBUG_PRINT
-        printf("ENTER PREFIX_SUM\n");
-    #endif
 
         // Store thread ofs to global varaible, used for later global prefix-sum.
         threadOfs[thread_id] = thread_ofs;
         #pragma omp barrier
-
 
         // Exclusive prefix-sum.
         unsigned int global_ofs = 0;
@@ -346,20 +274,10 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             char all_signs = cmpData[curr_block] & (3 << 5);
             unsigned int sign_flag = 0;
             int sign_ofs;
-
-            
             
             memcpy((char*)&absQuant[block_start], &cmpData[cmp_byte_ofs], 4);
             cmp_byte_ofs += 4;
             decData[block_start] = absQuant[block_start] * errorBound * 2;
-
-
-            #ifdef COMPRESS_DEBUG_PRINT
-                if (chosen_block == curr_block) 
-                {
-                    printf("First item: %f\n", *(float*)&decData[block_start]);
-                }
-            #endif
 
             // Operation for each block, if zero block then do nothing.
             if(temp_fixed_rate)
@@ -371,85 +289,8 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                     memcpy((char*)&sign_flag, &cmpData[cmp_byte_ofs],4);
                     cmp_byte_ofs += 4;
                 }
-
-
-                #ifdef COMPRESS_DEBUG_PRINT
-                    if (chosen_block == curr_block) 
-                    {
-                        printf("Sign flag: ");
-                        printbin(sign_flag);
-                        printf("\n");
-                    }
-                #endif
-                // __m128i temp;
-                // __m128i absQuant00 = _mm_set1_epi32(0);
-                // __m128i absQuant01 = _mm_set1_epi32(0);
-                // __m128i absQuant10 = _mm_set1_epi32(0);
-                // __m128i absQuant11 = _mm_set1_epi32(0);
-                // __m128i absQuant20 = _mm_set1_epi32(0);
-                // __m128i absQuant21 = _mm_set1_epi32(0);
-                // __m128i absQuant30 = _mm_set1_epi32(0);
-                // __m128i absQuant31 = _mm_set1_epi32(0);
-                // int og_cmp = cmp_byte_ofs;       
-                // int bitset;
-                // __m128i mask = _mm_set1_epi32(0x00000001);
-                // for (int bit = temp_fixed_rate; bit --;) 
-                // {
-                //     // Initialization.
-                    
-                //     memcpy(&bitset, &cmpData[cmp_byte_ofs], 4);
-                //     cmp_byte_ofs+=4;
-                    
-                //     absQuant31 = _mm_or_si128(absQuant31, _mm_slli_epi32(_mm_and_si128( 
-                //                                 _mm_set_epi32(bitset >> 31, bitset >> 30, bitset >> 29, bitset >> 28),
-                //                                 mask),
-                //                                 bit)
-                //                             );
-                //     absQuant30 = _mm_or_si128(absQuant30, _mm_slli_epi32(_mm_and_si128( 
-                //                                 _mm_set_epi32(bitset >> 27, bitset >> 26, bitset >> 25, bitset >> 24),
-                //                                 mask),
-                //                             bit));
-                //     absQuant21 = _mm_or_si128(absQuant21, _mm_slli_epi32(_mm_and_si128( 
-                //                     _mm_set_epi32(bitset >> 23, bitset >> 22, bitset >> 21, bitset >> 20),
-                //                     mask),
-                //                 bit));
-                //     absQuant20 = _mm_or_si128(absQuant20, _mm_slli_epi32(_mm_and_si128( 
-                //                         _mm_set_epi32(bitset >> 19, bitset >> 18, bitset >> 17, bitset >> 16),
-                //                         mask),
-                //                     bit));
-                //     absQuant11 = _mm_or_si128(absQuant11, _mm_slli_epi32(_mm_and_si128( 
-                //             _mm_set_epi32(bitset >> 15, bitset >> 14, bitset >> 13, bitset >> 12),
-                //             mask),
-                //         bit));
-                //         absQuant10 = _mm_or_si128(absQuant10, _mm_slli_epi32(_mm_and_si128( 
-                //                 _mm_set_epi32(bitset >> 11, bitset >> 10, bitset >> 9, bitset >> 8),
-                //                 mask),
-                //             bit));
-
-                    
-                //     absQuant01 = _mm_or_si128(absQuant01, _mm_slli_epi32(_mm_and_si128( 
-                //                             _mm_set_epi32(bitset >> 7, bitset >> 6, bitset >> 5, bitset >> 4),
-                //                             mask),
-                //                         bit));
-                //     absQuant00 = _mm_or_si128(absQuant00, _mm_slli_epi32(_mm_and_si128( 
-                //             _mm_set_epi32(bitset >> 3, bitset >> 2, bitset >> 1, bitset >> 0),
-                //             mask),
-                //         bit));
-                // }
-                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 - 28], absQuant00);
-                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 -24], absQuant01);
-                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 -20], absQuant10);
-                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 -16], absQuant11);
-                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 -12], absQuant20);
-                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 -8], absQuant21);
-                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 -4], absQuant30);
-                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4], absQuant31);
-                
-                
-              
+               
                 int bitset;
-                int o;
-                int loc;
                 __m128i mask = _mm_set1_epi32(0x00000001);
                 __m128i absQuant00 = _mm_set1_epi32(0);
                 __m128i absQuant01 = _mm_set1_epi32(0);
@@ -462,45 +303,47 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                 for (int bit = temp_fixed_rate; bit --;) {
                     memcpy(&bitset, &cmpData[cmp_byte_ofs + (bit << 2)], 4);
                     absQuant00 = _mm_or_si128(absQuant00, _mm_slli_epi32(
-                        _mm_and_si128( 
-                            _mm_set_epi32(bitset >> 31, bitset >> 30, bitset >> 29, bitset >> 28),
-                            mask),
-                        bit));    
+                                    _mm_and_si128( 
+                                        _mm_set_epi32(bitset >> 31, bitset >> 30, bitset >> 29, bitset >> 28),
+                                        mask),
+                                    bit));    
                     absQuant01 = _mm_or_si128(absQuant01, _mm_slli_epi32(
-                        _mm_and_si128( 
-                            _mm_set_epi32(bitset >> 27, bitset >> 26, bitset >> 25, bitset >> 24),
-                            mask),
-                        bit));    
+                                    _mm_and_si128( 
+                                        _mm_set_epi32(bitset >> 27, bitset >> 26, bitset >> 25, bitset >> 24),
+                                        mask),
+                                    bit));    
                     absQuant10 = _mm_or_si128(absQuant10, _mm_slli_epi32(
-                        _mm_and_si128( 
-                            _mm_set_epi32(bitset >> 23, bitset >> 22, bitset >> 21, bitset >> 20),
-                            mask),
-                        bit));    
+                                    _mm_and_si128( 
+                                        _mm_set_epi32(bitset >> 23, bitset >> 22, bitset >> 21, bitset >> 20),
+                                        mask),
+                                    bit));    
                     absQuant11 = _mm_or_si128(absQuant11, _mm_slli_epi32(
-                        _mm_and_si128( 
-                            _mm_set_epi32(bitset >> 19, bitset >> 18, bitset >> 17, bitset >> 16),
-                            mask),
-                        bit));    
+                                    _mm_and_si128( 
+                                        _mm_set_epi32(bitset >> 19, bitset >> 18, bitset >> 17, bitset >> 16),
+                                        mask),
+                                    bit));    
                     absQuant20 = _mm_or_si128(absQuant20, _mm_slli_epi32(
-                        _mm_and_si128( 
-                            _mm_set_epi32(bitset >> 15, bitset >> 14, bitset >> 13, bitset >> 12),
-                            mask),
-                        bit));    
+                                    _mm_and_si128( 
+                                        _mm_set_epi32(bitset >> 15, bitset >> 14, bitset >> 13, bitset >> 12),
+                                        mask),
+                                    bit));    
                     absQuant21 = _mm_or_si128(absQuant21, _mm_slli_epi32(
-                        _mm_and_si128( 
-                            _mm_set_epi32(bitset >> 11, bitset >> 10, bitset >> 9, bitset >> 8),
-                            mask),
-                        bit));    
+                                    _mm_and_si128( 
+                                        _mm_set_epi32(bitset >> 11, bitset >> 10, bitset >> 9, bitset >> 8),
+                                        mask),
+                                    bit));    
                     absQuant30 = _mm_or_si128(absQuant30, _mm_slli_epi32(
-                        _mm_and_si128( 
-                            _mm_set_epi32(bitset >> 7, bitset >> 6, bitset >> 5, bitset >> 4),
-                            mask),
-                        bit));    
+                                    _mm_and_si128( 
+                                        _mm_set_epi32(bitset >> 7, bitset >> 6, bitset >> 5, bitset >> 4),
+                                        mask),
+                                    bit));    
                     absQuant31 = _mm_or_si128(absQuant31, _mm_slli_epi32(
-                        _mm_and_si128( 
-                            _mm_set_epi32(bitset >> 3, bitset >> 2, bitset >> 1, bitset >> 0),
-                            mask),
-                        bit));    
+                                    _mm_and_si128( 
+                                        _mm_set_epi32(bitset >> 3, bitset >> 2, bitset >> 1, bitset >> 0),
+                                        mask),
+                                    bit));    
+
+
                     _mm_storeu_si128((__m128i *)&absQuant[block_end-4], absQuant00);
                     _mm_storeu_si128((__m128i *)&absQuant[block_end-8], absQuant01);
                     _mm_storeu_si128((__m128i *)&absQuant[block_end-12], absQuant10);
@@ -510,15 +353,8 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                     _mm_storeu_si128((__m128i *)&absQuant[block_end-28], absQuant30);
                     _mm_storeu_si128((__m128i *)&absQuant[block_end-32], absQuant31);
 
-
-
-                 } 
-                 cmp_byte_ofs += 4 * temp_fixed_rate;
-                
-                //  for(int i = 1; i <= 32; i++){
-                //     printf("%x=%x ", actualQuant[32-i], absQuant[block_end - i]);
-                //  }
-                //  printf("\n");
+                } 
+                cmp_byte_ofs += 4 * temp_fixed_rate;
 
                 {
                     // De-quantize and store data back to decompression data.
@@ -543,14 +379,7 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                         
 
                         decData[loc] = currQuant * errorBound * 2;
-                        #ifdef COMPRESS_DEBUG_PRINT
-                            if (chosen_block == curr_block) 
-                            {
-                                printf("%d: Recovered value: %f, absQuant: %d, bin: ",o, decData[loc], currQuant);
-                                printbin(absQuant[loc]);
-                                printf("\n");
-                            }
-                        #endif 
+                       
                         o++;
                         loc++;
                         prevQuant = currQuant;
@@ -575,20 +404,10 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
             char all_signs = cmpData[curr_block] & (3 << 5);
             unsigned int sign_flag = 0;
             int sign_ofs;
-
-            
             
             memcpy((char*)&absQuant[block_start], &cmpData[cmp_byte_ofs], 4);
             cmp_byte_ofs += 4;
             decData[block_start] = absQuant[block_start] * errorBound * 2;
-
-
-            #ifdef COMPRESS_DEBUG_PRINT
-                if (chosen_block == curr_block) 
-                {
-                    printf("First item: %f\n", *(float*)&decData[block_start]);
-                }
-            #endif
 
             // Operation for each block, if zero block then do nothing.
             if(temp_fixed_rate)
@@ -601,16 +420,6 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                     cmp_byte_ofs += 4;
                 }
 
-
-                #ifdef COMPRESS_DEBUG_PRINT
-                    if (chosen_block == curr_block) 
-                    {
-                        printf("Sign flag: ");
-                        printbin(sign_flag);
-                        printf("\n");
-                    }
-                #endif
-                
                 int bitset;
                 int o;
                 int loc;
@@ -624,7 +433,6 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                  } 
                  cmp_byte_ofs += 4 * temp_fixed_rate;
                 
-
                 {
                     // De-quantize and store data back to decompression data.
                     int currQuant = 0;
@@ -646,16 +454,8 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                         if(sign_flag & (1 << o))
                             currQuant = -currQuant;
                         
-
                         decData[loc] = currQuant * errorBound * 2;
-                        #ifdef COMPRESS_DEBUG_PRINT
-                            if (chosen_block == curr_block) 
-                            {
-                                printf("%d: Recovered value: %f, absQuant: %d, bin: ",o, decData[loc], currQuant);
-                                printbin(absQuant[loc]);
-                                printf("\n");
-                            }
-                        #endif 
+                       
                         o++;
                         loc++;
                         prevQuant = currQuant;
