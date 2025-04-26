@@ -109,7 +109,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                 int store = (dif<0) ? (abs(dif)<< 1)-1 : (dif << 1);
 
                 // Get absolute quantization code.
-                max_quant = max(store, max_quant);
+                max_quant |= store;
                 absQuant[loc] = store;
 
 
