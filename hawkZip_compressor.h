@@ -29,7 +29,7 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
 
         // Iterate all blocks in current thread.
         for(int i=0; i<block_num; i++)
-        {
+        { 
             // Block initialization.
             block_start = start + i * 32;
             block_end = (block_start+32) > end ? end : block_start+32;
