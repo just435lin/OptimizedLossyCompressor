@@ -99,12 +99,8 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                 // Prequantization.
                 data_recip = (oriData[j]) * recip_precision;
                 curr_quant = data_recip < 0.0f ? (int)(data_recip - 0.5f) : (int)(data_recip + 0.5f);
-                
-
                 // Get sign data.
                 sign_flag |= (curr_quant < 0) << (j - (block_start + 1));
-
-
                 int dif = abs(curr_quant) - abs(prev_quant);
                 int store = (dif << 1) ^ (dif >> 31);
                 // Get absolute quantization code.
@@ -193,29 +189,22 @@ void hawkZip_compress_kernel(float* oriData, unsigned char* cmpData, int* absQua
                     absQuantVec1 = _mm_and_si128(_mm_srli_epi32(absQuantVec1, bit), mask);
                     absQuantVec2 = _mm_and_si128(_mm_srli_epi32(absQuantVec2, bit), mask);
                     absQuantVec3 = _mm_and_si128(_mm_srli_epi32(absQuantVec3, bit), mask);
-                    
-                    absQuantVec0 = _mm_set_epi32( _mm_extract_epi32(absQuantVec0, 3) << (31 - 16 * i), 
-                                                _mm_extract_epi32(absQuantVec0, 2) << (30 - 16 * i),
-                                                _mm_extract_epi32(absQuantVec0, 1) << (29 - 16 * i),
-                                                _mm_extract_epi32(absQuantVec0, 0) << (28 - 16 * i));
-                    absQuantVec1 = _mm_set_epi32( _mm_extract_epi32(absQuantVec1, 3) << (27 - 16 * i), 
-                                                _mm_extract_epi32(absQuantVec1, 2) << (26 - 16 * i),
-                                                _mm_extract_epi32(absQuantVec1, 1) << (25 - 16 * i),
-                                                _mm_extract_epi32(absQuantVec1, 0) << (24 - 16 * i));
-                    absQuantVec2 = _mm_set_epi32( _mm_extract_epi32(absQuantVec2, 3) << (23 - 16 * i), 
-                                                _mm_extract_epi32(absQuantVec2, 2) << (22 - 16 * i),
-                                                _mm_extract_epi32(absQuantVec2, 1) << (21 - 16 * i),
-                                                _mm_extract_epi32(absQuantVec2, 0) << (20 - 16 * i));
-                    absQuantVec3 = _mm_set_epi32( _mm_extract_epi32(absQuantVec3, 3) << (19 - 16 * i), 
-                                                _mm_extract_epi32(absQuantVec3, 2) << (18 - 16 * i),
-                                                _mm_extract_epi32(absQuantVec3, 1) << (17 - 16 * i),
-                                                _mm_extract_epi32(absQuantVec3, 0) << (16 - 16 * i));
-                    absQuantVec = _mm_or_si128(_mm_or_si128(absQuantVec2, absQuantVec3),_mm_or_si128(absQuantVec0, absQuantVec1));
-                    data |=  
-                            _mm_extract_epi32(absQuantVec, 0)  |
-                            _mm_extract_epi32(absQuantVec, 1)  |
-                            _mm_extract_epi32(absQuantVec, 2)  |
-                            _mm_extract_epi32(absQuantVec, 3) ;
+                    data |=   _mm_extract_epi32(absQuantVec0, 3) << (31 - 16 * i)
+                    | _mm_extract_epi32(absQuantVec0, 2) << (30 - 16 * i)
+                    | _mm_extract_epi32(absQuantVec0, 1) << (29 - 16 * i)
+                    | _mm_extract_epi32(absQuantVec0, 0) << (28 - 16 * i) 
+                    | _mm_extract_epi32(absQuantVec1, 3) << (27 - 16 * i)
+                    | _mm_extract_epi32(absQuantVec1, 2) << (26 - 16 * i)
+                    | _mm_extract_epi32(absQuantVec1, 1) << (25 - 16 * i)
+                    | _mm_extract_epi32(absQuantVec1, 0) << (24 - 16 * i) 
+                    | _mm_extract_epi32(absQuantVec2, 3) << (23 - 16 * i)
+                    | _mm_extract_epi32(absQuantVec2, 2) << (22 - 16 * i)
+                    | _mm_extract_epi32(absQuantVec2, 1) << (21 - 16 * i)
+                    | _mm_extract_epi32(absQuantVec2, 0) << (20 - 16 * i) 
+                    | _mm_extract_epi32(absQuantVec3, 3) << (19 - 16 * i)
+                    | _mm_extract_epi32(absQuantVec3, 2) << (18 - 16 * i)
+                    | _mm_extract_epi32(absQuantVec3, 1) << (17 - 16 * i)
+                    | _mm_extract_epi32(absQuantVec3, 0) << (16 - 16 * i);
                     }
                     memcpy(&cmpData[cmp_byte_ofs + (bit << 2)], &data,  4);
 
