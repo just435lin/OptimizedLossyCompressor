@@ -393,23 +393,144 @@ void hawkZip_decompress_kernel(float* decData, unsigned char* cmpData, int* absQ
                         printf("\n");
                     }
                 #endif
+                // __m128i temp;
+                // __m128i absQuant00 = _mm_set1_epi32(0);
+                // __m128i absQuant01 = _mm_set1_epi32(0);
+                // __m128i absQuant10 = _mm_set1_epi32(0);
+                // __m128i absQuant11 = _mm_set1_epi32(0);
+                // __m128i absQuant20 = _mm_set1_epi32(0);
+                // __m128i absQuant21 = _mm_set1_epi32(0);
+                // __m128i absQuant30 = _mm_set1_epi32(0);
+                // __m128i absQuant31 = _mm_set1_epi32(0);
+                // int og_cmp = cmp_byte_ofs;       
+                // int bitset;
+                // __m128i mask = _mm_set1_epi32(0x00000001);
+                // for (int bit = temp_fixed_rate; bit --;) 
+                // {
+                //     // Initialization.
+                    
+                //     memcpy(&bitset, &cmpData[cmp_byte_ofs], 4);
+                //     cmp_byte_ofs+=4;
+                    
+                //     absQuant31 = _mm_or_si128(absQuant31, _mm_slli_epi32(_mm_and_si128( 
+                //                                 _mm_set_epi32(bitset >> 31, bitset >> 30, bitset >> 29, bitset >> 28),
+                //                                 mask),
+                //                                 bit)
+                //                             );
+                //     absQuant30 = _mm_or_si128(absQuant30, _mm_slli_epi32(_mm_and_si128( 
+                //                                 _mm_set_epi32(bitset >> 27, bitset >> 26, bitset >> 25, bitset >> 24),
+                //                                 mask),
+                //                             bit));
+                //     absQuant21 = _mm_or_si128(absQuant21, _mm_slli_epi32(_mm_and_si128( 
+                //                     _mm_set_epi32(bitset >> 23, bitset >> 22, bitset >> 21, bitset >> 20),
+                //                     mask),
+                //                 bit));
+                //     absQuant20 = _mm_or_si128(absQuant20, _mm_slli_epi32(_mm_and_si128( 
+                //                         _mm_set_epi32(bitset >> 19, bitset >> 18, bitset >> 17, bitset >> 16),
+                //                         mask),
+                //                     bit));
+                //     absQuant11 = _mm_or_si128(absQuant11, _mm_slli_epi32(_mm_and_si128( 
+                //             _mm_set_epi32(bitset >> 15, bitset >> 14, bitset >> 13, bitset >> 12),
+                //             mask),
+                //         bit));
+                //         absQuant10 = _mm_or_si128(absQuant10, _mm_slli_epi32(_mm_and_si128( 
+                //                 _mm_set_epi32(bitset >> 11, bitset >> 10, bitset >> 9, bitset >> 8),
+                //                 mask),
+                //             bit));
+
+                    
+                //     absQuant01 = _mm_or_si128(absQuant01, _mm_slli_epi32(_mm_and_si128( 
+                //                             _mm_set_epi32(bitset >> 7, bitset >> 6, bitset >> 5, bitset >> 4),
+                //                             mask),
+                //                         bit));
+                //     absQuant00 = _mm_or_si128(absQuant00, _mm_slli_epi32(_mm_and_si128( 
+                //             _mm_set_epi32(bitset >> 3, bitset >> 2, bitset >> 1, bitset >> 0),
+                //             mask),
+                //         bit));
+                // }
+                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 - 28], absQuant00);
+                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 -24], absQuant01);
+                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 -20], absQuant10);
+                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 -16], absQuant11);
+                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 -12], absQuant20);
+                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 -8], absQuant21);
+                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4 -4], absQuant30);
+                // _mm_storeu_si128((__m128i *)&absQuant[block_end-4], absQuant31);
                 
+                
+              
                 int bitset;
                 int o;
                 int loc;
+                __m128i mask = _mm_set1_epi32(0x00000001);
+                __m128i absQuant00 = _mm_set1_epi32(0);
+                __m128i absQuant01 = _mm_set1_epi32(0);
+                __m128i absQuant10 = _mm_set1_epi32(0);
+                __m128i absQuant11 = _mm_set1_epi32(0);
+                __m128i absQuant20 = _mm_set1_epi32(0);
+                __m128i absQuant21 = _mm_set1_epi32(0);
+                __m128i absQuant30 = _mm_set1_epi32(0);
+                __m128i absQuant31 = _mm_set1_epi32(0);
                 for (int bit = temp_fixed_rate; bit --;) {
                     memcpy(&bitset, &cmpData[cmp_byte_ofs + (bit << 2)], 4);
-                    o = 32;
-                    loc = block_end;
-                    do {
-                        absQuant[--loc] |= ((bitset >> (--o)) & 1) << bit;
-                        absQuant[--loc] |= ((bitset >> (--o)) & 1) << bit;
-                        absQuant[--loc] |= ((bitset >> (--o)) & 1) << bit;
-                        absQuant[--loc] |= ((bitset >> (--o)) & 1) << bit;
-                    } while (o);
+                    absQuant00 = _mm_or_si128(absQuant00, _mm_slli_epi32(
+                        _mm_and_si128( 
+                            _mm_set_epi32(bitset >> 31, bitset >> 30, bitset >> 29, bitset >> 28),
+                            mask),
+                        bit));    
+                    absQuant01 = _mm_or_si128(absQuant01, _mm_slli_epi32(
+                        _mm_and_si128( 
+                            _mm_set_epi32(bitset >> 27, bitset >> 26, bitset >> 25, bitset >> 24),
+                            mask),
+                        bit));    
+                    absQuant10 = _mm_or_si128(absQuant10, _mm_slli_epi32(
+                        _mm_and_si128( 
+                            _mm_set_epi32(bitset >> 23, bitset >> 22, bitset >> 21, bitset >> 20),
+                            mask),
+                        bit));    
+                    absQuant11 = _mm_or_si128(absQuant11, _mm_slli_epi32(
+                        _mm_and_si128( 
+                            _mm_set_epi32(bitset >> 19, bitset >> 18, bitset >> 17, bitset >> 16),
+                            mask),
+                        bit));    
+                    absQuant20 = _mm_or_si128(absQuant20, _mm_slli_epi32(
+                        _mm_and_si128( 
+                            _mm_set_epi32(bitset >> 15, bitset >> 14, bitset >> 13, bitset >> 12),
+                            mask),
+                        bit));    
+                    absQuant21 = _mm_or_si128(absQuant21, _mm_slli_epi32(
+                        _mm_and_si128( 
+                            _mm_set_epi32(bitset >> 11, bitset >> 10, bitset >> 9, bitset >> 8),
+                            mask),
+                        bit));    
+                    absQuant30 = _mm_or_si128(absQuant30, _mm_slli_epi32(
+                        _mm_and_si128( 
+                            _mm_set_epi32(bitset >> 7, bitset >> 6, bitset >> 5, bitset >> 4),
+                            mask),
+                        bit));    
+                    absQuant31 = _mm_or_si128(absQuant31, _mm_slli_epi32(
+                        _mm_and_si128( 
+                            _mm_set_epi32(bitset >> 3, bitset >> 2, bitset >> 1, bitset >> 0),
+                            mask),
+                        bit));    
+                    _mm_storeu_si128((__m128i *)&absQuant[block_end-4], absQuant00);
+                    _mm_storeu_si128((__m128i *)&absQuant[block_end-8], absQuant01);
+                    _mm_storeu_si128((__m128i *)&absQuant[block_end-12], absQuant10);
+                    _mm_storeu_si128((__m128i *)&absQuant[block_end-16], absQuant11);
+                    _mm_storeu_si128((__m128i *)&absQuant[block_end-20], absQuant20);
+                    _mm_storeu_si128((__m128i *)&absQuant[block_end-24], absQuant21);
+                    _mm_storeu_si128((__m128i *)&absQuant[block_end-28], absQuant30);
+                    _mm_storeu_si128((__m128i *)&absQuant[block_end-32], absQuant31);
+
+
+
                  } 
                  cmp_byte_ofs += 4 * temp_fixed_rate;
                 
+                //  for(int i = 1; i <= 32; i++){
+                //     printf("%x=%x ", actualQuant[32-i], absQuant[block_end - i]);
+                //  }
+                //  printf("\n");
 
                 {
                     // De-quantize and store data back to decompression data.
